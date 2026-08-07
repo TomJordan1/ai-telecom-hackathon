@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from app.core.config import settings
 from app.api.routes import router as chat_router
+from app.api.whatsapp import router as whatsapp_router
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -21,6 +22,7 @@ app.add_middleware(
 )
 
 app.include_router(chat_router, prefix=settings.API_V1_STR)
+app.include_router(whatsapp_router)
 
 # Serve Web Client
 app.mount("/static", StaticFiles(directory="app/static"), name="static")

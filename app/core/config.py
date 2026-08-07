@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "sqlite:///./lucia_brain.db"
 
+    # WhatsApp Cloud API Settings
+    WHATSAPP_TOKEN: str | None = None
+    WHATSAPP_PHONE_ID: str | None = None
+    WHATSAPP_VERIFY_TOKEN: str = "lucia_hackathon_secret"
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 settings = Settings()
