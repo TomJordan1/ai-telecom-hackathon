@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 from app.core.config import settings
 from app.api.routes import router as chat_router
 
@@ -19,6 +21,13 @@ app.add_middleware(
 )
 
 app.include_router(chat_router, prefix=settings.API_V1_STR)
+
+# Serve Web Client
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+@app.get("/")
+def read_root():
+    return RedirectResponse(url="/static/index.html")
 
 @app.get("/health")
 def health_check():
