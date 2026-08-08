@@ -4,6 +4,11 @@ from sqlalchemy.orm import Session
 from app.db import crud
 from datetime import datetime
 
+# La moneda es un hecho determinista, no una inferencia del LLM.
+# Sin este dato explícito el modelo puede alucinar símbolos (€, $) al redactar.
+MONEDA_CODIGO = "PEN"
+MONEDA_SIMBOLO = "S/"
+
 # 1. Pre-Filtro de Cumplimiento
 def validate_compliance(message: str, db: Session) -> Optional[str]:
     """
@@ -31,6 +36,8 @@ def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
     if len(recibos) == 1:
         # Solo tiene un recibo, no hay historial con qué comparar.
         return {
+            "moneda": MONEDA_CODIGO,
+            "simbolo_moneda": MONEDA_SIMBOLO,
             "current_bill": {
                 "amount": current_bill.monto_total,
                 "issue_date": current_bill.mes_emision
@@ -75,6 +82,8 @@ def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
         evidence.append("Reducción en los montos facturados.")
 
     payload = {
+        "moneda": MONEDA_CODIGO,
+        "simbolo_moneda": MONEDA_SIMBOLO,
         "current_bill": {
             "amount": current_bill.monto_total,
             "issue_date": current_bill.mes_emision

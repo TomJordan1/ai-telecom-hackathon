@@ -6,19 +6,25 @@ from app.services.llm import generate_response
 from app.services.case_matcher import match_caso
 from app.services.uncertainty_calculator import calculate_uncertainty, requires_handoff
 from app.services.feedback_handler import register_new_case
-from app.services.intent_classifier import classify_intent, get_conversational_response
-from app.core.schemas import ChatRequest, ChatResponse, MessageChunk
+from app.services.intent_classifier import route
+from app.services import persona
+from app.core.schemas import ChatRequest, ChatResponse, MessageChunk, PersonalityMetadata
+
 
 def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     """
-    Orquesta el ciclo completo de vida de la petición (8 pasos + 2 nuevos).
+    Orquesta el ciclo completo de vida de la petición.
+
+    Solo los turnos de facturación atraviesan el motor determinista, el case
+    matcher, el índice de incertidumbre y el RAG. Los turnos conversacionales se
+    resuelven sin tocar datos de facturación.
     """
     # Paso 1: Recepción, Carga de Estado y Memoria
     historial = crud.get_or_create_historial(db, request.session_id, request.user_id)
     comentarios = historial.comentarios_emocionales or []
     pending_emotions = [e for e in comentarios if not e.get("referenciado", False)]
 
-    # Paso 2: Pre-filtro de Compliance (Regex)
+    # Paso 2: Pre-filtro de Compliance (Regex, antes de cualquier IA)
     blocked_message = validate_compliance(request.message, db)
     if blocked_message:
         return ChatResponse(
@@ -29,23 +35,46 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             messages=[MessageChunk(text=blocked_message, type="explanation")]
         )
 
-    # Paso 2.5: Clasificación de Intención (Determinista)
-    # Si el mensaje no es de facturación, responder conversacionalmente sin activar el pipeline pesado.
-    intent, sub_intent = classify_intent(request.message)
-    if intent != "FACTURACION":
-        conversational_text = get_conversational_response(intent, sub_intent)
+    # Paso 2.5: Enrutamiento de intención y perfilado lingüístico
+    decision = route(
+        message=request.message,
+        perfil_previo=historial.perfil_lexico_usuario,
+        pending_emotions=pending_emotions,
+    )
+
+    # El registro lingüístico observado se persiste para dar continuidad a la sesión.
+    perfil_lexico = decision.perfil_lexico
+    if perfil_lexico != historial.perfil_lexico_usuario:
+        crud.update_historial(db, request.session_id, {"perfil_lexico_usuario": perfil_lexico})
+
+    print(
+        f"[routing] session={request.session_id} intent={decision.intent} "
+        f"perfil={perfil_lexico} fuente={decision.fuente}"
+    )
+
+    # Turno conversacional: se responde sin consultar datos de facturación.
+    if not decision.es_facturacion:
+        sentimiento = historial.score_sentimiento
+        if decision.intent == "AGRADECIMIENTO":
+            sentimiento = 5
+            crud.update_historial(db, request.session_id, {"score_sentimiento": sentimiento})
+
         return ChatResponse(
             session_id=request.session_id,
-            intent_category=f"{intent}_{sub_intent}",
-            sentiment_score=historial.score_sentimiento,
+            intent_category=decision.intent,
+            sentiment_score=sentimiento,
+            # No se afirma ningún hecho de facturación en este turno.
             confidence_score=99,
-            messages=[MessageChunk(text=conversational_text, type="hook")]
+            messages=[MessageChunk(text=decision.respuesta, type="hook")],
+            personality_metadata=PersonalityMetadata(
+                lucia_tone=persona.tono_para_metadata(perfil_lexico)
+            ),
         )
 
     # Paso 3: Motor Investigador (Determinista)
     fact_payload = calculate_billing_facts(request.user_id, db)
 
-    # Paso 3.5 [NUEVO]: Case Matcher — ¿existe una solución validada para este patrón?
+    # Paso 3.5: Case Matcher — ¿existe una solución validada para este patrón?
     caso_match = match_caso(db, fact_payload)
     caso_id_origen = None  # Se usará para registrar feedback después
 
@@ -55,7 +84,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         fact_payload["solucion_conocida"] = solucion_conocida
         fact_payload["caso_id"] = caso_id_origen
 
-    # Paso 3.6 [NUEVO]: Índice de Incertidumbre Determinístico
+    # Paso 3.6: Índice de Incertidumbre Determinístico
     uncertainty_score = calculate_uncertainty(
         fact_payload=fact_payload,
         caso_conocido=caso_match,
@@ -77,7 +106,10 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
                          "Un agente especializado te contactará en breve. 🙏",
                     type="explanation"
                 )
-            ]
+            ],
+            personality_metadata=PersonalityMetadata(
+                lucia_tone=persona.tono_para_metadata(perfil_lexico)
+            ),
         )
 
     # Paso 4: Búsqueda de Conocimiento (RAG) — solo si no hay caso conocido
@@ -105,7 +137,8 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         deterministic_payload=fact_payload,
         rag_context=rag_context,
         cross_sell_eligible=cross_sell_eligible,
-        pending_emotions=pending_emotions
+        pending_emotions=pending_emotions,
+        perfil_lexico=perfil_lexico,
     )
 
     # Adjuntar el confidence_score (inverso de incertidumbre)
@@ -121,7 +154,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         "score_sentimiento": current_sentiment
     })
 
-    # Paso 7.5 [NUEVO]: Si era un caso nuevo (sin match), registrar en cuarentena
+    # Paso 7.5: Si era un caso nuevo (sin match), registrar en cuarentena
     if not caso_match:
         solucion_serializada = {
             "intent_category": response.intent_category,

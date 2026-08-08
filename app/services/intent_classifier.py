@@ -1,122 +1,187 @@
+"""
+Enrutamiento de intención.
+
+Reparto de responsabilidades:
+
+- DETERMINISTA (regex): detectar señales inequívocas de facturación. El vocabulario
+  financiero es finito y predecible, así que aquí el regex es fiable y además evita
+  una llamada al modelo en el camino caliente.
+
+- LLM: todo lo demás. Es imposible enumerar todas las formas en que alguien puede
+  saludar, bromear, quejarse o usar jerga peruana, así que no se intenta. El modelo
+  entiende el lenguaje —que es justo su trabajo— y redacta la respuesta.
+
+Lo que el LLM NO hace aquí: calcular montos, decidir qué ocurrió en el recibo ni
+validar soluciones. Eso sigue siendo exclusivamente determinista.
+
+Red de seguridad: si el LLM no está disponible o falla, ante ambigüedad se asume
+FACTURACION. El índice de incertidumbre y el handoff a humano ya cubren ese caso,
+así que nunca se descarta una consulta legítima.
+"""
+
 import re
-from typing import Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
-# Clasificación de intención determinística (sin LLM).
-# Retorna (intent, sub_intent) donde intent es uno de:
-#   - "FACTURACION" → pasa al pipeline completo
-#   - "SALUDO" → respuesta conversacional de bienvenida
-#   - "DESPEDIDA" → respuesta de cierre
-#   - "OFF_TOPIC" → redirección amable al tema de facturación
-#   - "AGRADECIMIENTO" → respuesta breve + oferta de más ayuda
+from app.services import llm as llm_service
+from app.services import persona
 
-# Patrones ordenados por prioridad. Si el mensaje matchea facturación,
-# SIEMPRE se prioriza sobre cualquier otro intent.
+# ---------------------------------------------------------------------------
+# Señales deterministas de facturación (alta precisión)
+# ---------------------------------------------------------------------------
+# Solo términos que difícilmente aparecen fuera de una consulta de facturación.
+# Deliberadamente NO se incluyen expresiones ambiguas ("por qué", "caro", "no
+# entiendo"): esas las resuelve el LLM con contexto.
 
 _BILLING_PATTERNS = [
-    r"\b(recibo|factura|cobr\w*|pag\w*|monto|saldo|deuda)\b",
-    r"\b(plan|megas?|mbps|fibra|internet|velocidad)\b",
+    r"\b(recibo|recibos|factura|facturas|facturaci[oó]n|boleta)\b",
+    r"\bcobr\w*",
+    r"\b(monto|saldo|deuda|tarifa|cargo|cargos|consumo)\b",
+    r"\bpag(o|os|ar|u[eé]|amos|aste)\b",
+    r"\b(plan|planes|megas?|mbps|fibra|internet|velocidad)\b",
     r"\b(promo|promoci[oó]n|descuento|oferta)\b",
-    r"\b(sub[ií][oó]|aument[oó]|increment[oó]|baj[oó]|cambi[oó]|variaci[oó]n)\b",
-    r"\b(cuota|equipo|financ|router|repetidor)\b",
-    r"\b(corte|suspensi[oó]n|reconex|moroso)\b",
-    r"\b(prorrat|proporcional)\b",
-    r"\b(por\s*qu[eé]|explica|entiendo|no\s*entiendo|detalle)\b",
-    r"\b(caro|barato|estafa|robo|abus[oa])\b",
-    r"\b(mes pasado|mes anterior|este mes|julio|agosto|septiembre)\b",
+    r"\b(cuota|cuotas|financ\w*|router|repetidor|equipo)\b",
+    r"\b(prorrat\w*|proporcional)\b",
+    r"\b(suspensi[oó]n|reconex\w*|moroso|cortaron|corte del servicio)\b",
     r"\bS/\s*\d+",
     r"\b\d+\s*soles\b",
 ]
 
-_GREETING_PATTERNS = [
-    r"^\s*(hola|hey|buenas?|buenos?\s*(d[ií]as?|tardes?|noches?)|hi|hello|qu[eé]\s*tal|saludos?)\s*[!.?]*\s*$",
-    r"^\s*(hola|hey|buenas?\s*(tardes?|noches?|d[ií]as?)?)\s*[,!.]*\s*(lucia|luc[ií]a)?\s*[!.?]*\s*$",
+# ---------------------------------------------------------------------------
+# Pistas léxicas (SOLO una heurística de apoyo)
+# ---------------------------------------------------------------------------
+# Esta lista no pretende ser exhaustiva ni autoritativa: el LLM es quien decide
+# el perfil léxico. Sirve para dos casos concretos donde no hay llamada al modelo:
+#   1. El camino rápido de facturación.
+#   2. El modo degradado sin LLM.
+
+_JERGA_MARKERS = [
+    r"\b(pe|pue|causa|compadre|choch(era|o)|manyas?|chibol[oa]|flaco)\b",
+    r"\b(bravazo|paja|chevere|ch[eé]vere|yapa|al toque|chamba|luca|plata)\b",
+    r"\b(misio|salad[oa]|roche|ya fue|habla|oe|oye pe|asu|caserit[oa])\b",
+    r"\b(ntp|xq|pq|tqm|bcn|q tal|ta bien|nada q ver)\b",
+    r"\b(huevad|cojud|jodid)\w*",
 ]
 
-_FAREWELL_PATTERNS = [
-    r"^\s*(adi[oó]s|chao|chau|bye|hasta\s*luego|nos\s*vemos|gracias\s*adi[oó]s)\s*[,!.?]*\s*(lucia|luc[ií]a)?\s*[!.?]*\s*$",
+_FORMAL_MARKERS = [
+    r"\b(usted|ustedes|estimad[oa]s?|cordialmente|atentamente|agradecer[eé]|agradecer[ií]a)\b",
+    r"\b(quisiera|desear[ií]a|solicito|le agradezco|por favor tenga|s[ií]rvase)\b",
+    r"\b(buenos d[ií]as|buenas tardes|buenas noches)\b",
 ]
 
-_THANKS_PATTERNS = [
-    r"^\s*(gracias|muchas\s*gracias|te\s*agradezco|genial|perfecto|excelente|ok\s*gracias)\s*[!.?]*\s*$",
-]
+# Mensaje único de modo degradado (sin LLM disponible).
+# No es un catálogo de respuestas: es el salvavidas para que el servicio no caiga.
+_FALLBACK_CONVERSACIONAL = (
+    "¡Hola! Soy Lucía y te ayudo con todo lo relacionado a tu recibo y tu plan. "
+    "¿Qué te gustaría revisar?"
+)
 
 
-def classify_intent(message: str) -> Tuple[str, str]:
+@dataclass
+class RoutingDecision:
+    """Resultado del enrutamiento de un turno."""
+    intent: str                      # FACTURACION | SALUDO | DESPEDIDA | AGRADECIMIENTO | FUERA_DE_DOMINIO
+    perfil_lexico: str               # FORMAL | CASUAL | USO_JERGAS
+    respuesta: Optional[str] = None  # Texto ya redactado (solo turnos no-facturación)
+    fuente: str = "DETERMINISTA"     # LLM | DETERMINISTA — para observabilidad
+
+    @property
+    def es_facturacion(self) -> bool:
+        return self.intent == "FACTURACION"
+
+
+def has_billing_signals(message: str) -> bool:
+    """¿El mensaje contiene vocabulario inequívoco de facturación?"""
+    texto = message.lower()
+    return any(re.search(p, texto) for p in _BILLING_PATTERNS)
+
+
+def detectar_perfil_lexico_heuristico(message: str, perfil_previo: Optional[str] = None) -> str:
     """
-    Clasifica la intención del mensaje de forma determinística.
-    Retorna (intent, sub_intent).
-    
-    Prioridad:
-    1. Si contiene señales de facturación → FACTURACION (siempre gana)
-    2. Si es saludo puro → SALUDO
-    3. Si es despedida pura → DESPEDIDA
-    4. Si es agradecimiento puro → AGRADECIMIENTO
-    5. Todo lo demás → OFF_TOPIC
+    Estimación de registro sin llamar al modelo. Heurística de apoyo:
+    se usa en el camino rápido de facturación y en modo degradado.
     """
-    msg = message.strip()
-    msg_lower = msg.lower()
+    texto = message.lower()
 
-    # 1. Facturación siempre tiene prioridad
-    for pattern in _BILLING_PATTERNS:
-        if re.search(pattern, msg_lower):
-            return ("FACTURACION", "CONSULTA")
+    if any(re.search(p, texto) for p in _JERGA_MARKERS):
+        return persona.PERFIL_JERGAS
+    if any(re.search(p, texto) for p in _FORMAL_MARKERS):
+        return persona.PERFIL_FORMAL
 
-    # 2. Saludo puro (mensajes cortos sin contenido de facturación)
-    for pattern in _GREETING_PATTERNS:
-        if re.search(pattern, msg_lower):
-            return ("SALUDO", "INICIAL")
-
-    # 3. Despedida
-    for pattern in _FAREWELL_PATTERNS:
-        if re.search(pattern, msg_lower):
-            return ("DESPEDIDA", "CIERRE")
-
-    # 4. Agradecimiento
-    for pattern in _THANKS_PATTERNS:
-        if re.search(pattern, msg_lower):
-            return ("AGRADECIMIENTO", "POSITIVO")
-
-    # 5. Mensajes muy cortos (< 5 palabras) sin señales de facturación → OFF_TOPIC
-    #    Mensajes largos sin señales → igual OFF_TOPIC pero podrían ser consultas ambiguas
-    #    Para no perder consultas legítimas mal formuladas, solo clasificamos como OFF_TOPIC
-    #    mensajes que claramente no tienen relación con facturación.
-    word_count = len(msg_lower.split())
-    if word_count <= 6:
-        return ("OFF_TOPIC", "CONVERSACIONAL")
-
-    # Mensajes más largos sin keywords de facturación: tratarlos como OFF_TOPIC
-    # pero con sub_intent AMBIGUO para que la respuesta ofrezca ayuda
-    return ("OFF_TOPIC", "AMBIGUO")
+    # Sin señales claras: se conserva el registro ya observado en la sesión.
+    if perfil_previo:
+        return persona.normalizar_perfil(perfil_previo)
+    return persona.PERFIL_POR_DEFECTO
 
 
-def get_conversational_response(intent: str, sub_intent: str) -> str:
+def route(
+    message: str,
+    perfil_previo: Optional[str] = None,
+    pending_emotions: Optional[List[Dict]] = None,
+) -> RoutingDecision:
     """
-    Genera una respuesta conversacional apropiada para intents no-facturación.
-    """
-    responses = {
-        ("SALUDO", "INICIAL"): (
-            "¡Hola! 😊 Soy Lucía, tu asistente de facturación. "
-            "Puedo ayudarte a entender tu recibo, explicarte cambios en tus montos "
-            "o resolver dudas sobre tu plan. ¿En qué te puedo ayudar?"
-        ),
-        ("DESPEDIDA", "CIERRE"): (
-            "¡Hasta pronto! Si en el futuro tienes alguna duda sobre tu recibo, "
-            "aquí estaré para ayudarte. 👋"
-        ),
-        ("AGRADECIMIENTO", "POSITIVO"): (
-            "¡De nada! Me alegra haberte ayudado. "
-            "Si tienes otra consulta sobre tu recibo o plan, no dudes en escribirme. 😊"
-        ),
-        ("OFF_TOPIC", "CONVERSACIONAL"): (
-            "¡Estoy aquí para ayudarte! 😊 Mi especialidad es explicarte todo lo relacionado "
-            "con tu recibo y tu plan. ¿Tienes alguna consulta sobre tu facturación?"
-        ),
-        ("OFF_TOPIC", "AMBIGUO"): (
-            "Mmm, no estoy segura de entender tu consulta. "
-            "Puedo ayudarte con temas de facturación: explicarte por qué subió tu recibo, "
-            "detallar los conceptos cobrados, o revisar tu plan actual. "
-            "¿Hay algo de eso en lo que pueda asistirte?"
-        ),
-    }
+    Decide si el turno va al pipeline de facturación o se resuelve conversacionalmente.
 
-    return responses.get((intent, sub_intent), responses[("OFF_TOPIC", "CONVERSACIONAL")])
+    Para turnos conversacionales la respuesta ya viene redactada por el LLM, con la
+    personalidad de Lucía y adaptada al registro del usuario.
+    """
+    # 1. Camino rápido: señales claras de facturación → sin llamada extra al modelo.
+    if has_billing_signals(message):
+        return RoutingDecision(
+            intent="FACTURACION",
+            perfil_lexico=detectar_perfil_lexico_heuristico(message, perfil_previo),
+            fuente="DETERMINISTA",
+        )
+
+    # 2. Sin señales claras: decide el LLM (entiende jerga, ironía y contexto).
+    resultado = llm_service.classify_and_reply(
+        user_message=message,
+        perfil_previo=perfil_previo,
+        pending_emotions=pending_emotions,
+    )
+
+    if resultado:
+        intent = resultado["intent"]
+        perfil = resultado["perfil_lexico"]
+
+        # El LLM detectó una consulta de facturación expresada sin vocabulario técnico
+        # (p. ej. jerga: "oe, mi luz salió salada este mes").
+        if intent == "FACTURACION":
+            return RoutingDecision(intent="FACTURACION", perfil_lexico=perfil, fuente="LLM")
+
+        respuesta = resultado.get("respuesta") or _FALLBACK_CONVERSACIONAL
+        return RoutingDecision(
+            intent=intent,
+            perfil_lexico=perfil,
+            respuesta=respuesta,
+            fuente="LLM",
+        )
+
+    # 3. Modo degradado (sin LLM). Ante la duda, tratar como facturación:
+    #    el índice de incertidumbre derivará a un humano si no hay datos suficientes,
+    #    lo cual es preferible a ignorar una consulta real.
+    perfil = detectar_perfil_lexico_heuristico(message, perfil_previo)
+    if _parece_social_simple(message):
+        return RoutingDecision(
+            intent="FUERA_DE_DOMINIO",
+            perfil_lexico=perfil,
+            respuesta=_FALLBACK_CONVERSACIONAL,
+            fuente="DETERMINISTA",
+        )
+
+    return RoutingDecision(intent="FACTURACION", perfil_lexico=perfil, fuente="DETERMINISTA")
+
+
+def _parece_social_simple(message: str) -> bool:
+    """
+    Heurística mínima de modo degradado: mensajes muy cortos con raíces sociales
+    evidentes. Solo se usa cuando el LLM no está disponible.
+    """
+    texto = message.strip().lower()
+    if len(texto.split()) > 4:
+        return False
+    return bool(re.search(
+        r"\b(hola|hey|buenas|buenos|hi|hello|saludos|gracias|adi[oó]s|chao|chau|bye|"
+        r"hasta luego|nos vemos|ok|vale|listo)\b",
+        texto,
+    ))
