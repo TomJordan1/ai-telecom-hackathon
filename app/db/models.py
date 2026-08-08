@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, DateTime, JSON
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, JSON
+import uuid
 from datetime import datetime
 from app.db.database import Base
 
@@ -42,3 +43,39 @@ class TerminosRestringidos(Base):
     patron_regex = Column(String)
     accion_disparador = Column(String) # LEGAL_RIESGO, INSULTO, DATOS_SENSIBLES
     mensaje_bloqueo = Column(String)
+
+class BaseCasos(Base):
+    """
+    Conocimiento validado y reutilizable.
+    Solo los casos que han pasado por cuarentena y fueron aprobados llegan aquí.
+    """
+    __tablename__ = "base_casos"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    patron_problema = Column(String, index=True) # e.g. 'FIN_PROMOCION'
+    condiciones = Column(JSON)  # Firma determinista del caso
+    solucion_estructurada = Column(JSON)  # Qué decir, qué evidencia mostrar, qué ofrecer
+    veces_aplicado = Column(Integer, default=0)
+    tasa_exito = Column(Float, default=0.0) # % de follow-ups positivos
+    fecha_validacion = Column(DateTime, default=datetime.utcnow)
+    validado_por = Column(String, default="SISTEMA") # SISTEMA | AGENTE_MOVISTAR
+    activo = Column(Boolean, default=True)
+
+class CuarentenaCasos(Base):
+    """
+    Sala de espera para casos nuevos que el sistema no reconoció.
+    Requieren validación antes de convertirse en conocimiento confiable.
+    """
+    __tablename__ = "cuarentena_casos"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    session_id = Column(String, index=True)
+    patron_detectado = Column(String)
+    evidencias = Column(JSON)   # Deterministic Fact Payload completo
+    solucion_propuesta = Column(JSON)  # Lo que Lucía respondió
+    feedback_inmediato = Column(String, default="SIN_RESPUESTA")  # POSITIVO | NEGATIVO | SIN_RESPUESTA
+    feedback_posterior = Column(String, default="PENDIENTE")  # SOLUCIONADO | NO_SOLUCIONADO | PENDIENTE
+    fecha_consulta = Column(DateTime, default=datetime.utcnow)
+    fecha_followup = Column(DateTime, nullable=True)
+    estado_validacion = Column(String, default="PENDIENTE")  # PENDIENTE | APROBADO | RECHAZADO
+    incertidumbre_score = Column(Float, default=0.5)
