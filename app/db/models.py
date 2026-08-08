@@ -24,6 +24,10 @@ class HistorialInteracciones(Base):
     score_sentimiento = Column(Integer, default=3)
     perfil_lexico_usuario = Column(String, default="CASUAL") # FORMAL, CASUAL, USO_JERGAS
     estado_resolucion = Column(Boolean, default=False)
+    historial_conversacion = Column(JSON, default=list)
+    # Bitácora acotada de turnos recientes (no todo el historial, solo lo necesario
+    # para dar continuidad): [{"role": "user"|"lucia", "text": "...", "intent": "..."}]
+    # Sin esto el modelo no tiene forma de saber qué ya explicó en la sesión.
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

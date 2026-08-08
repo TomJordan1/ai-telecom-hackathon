@@ -48,6 +48,24 @@ _BILLING_PATTERNS = [
 ]
 
 # ---------------------------------------------------------------------------
+# Solicitud explícita de agente humano (máxima prioridad)
+# ---------------------------------------------------------------------------
+# Es una señal estructural, no de contenido: independientemente del tema, si el
+# usuario pide hablar con una persona hay que honrarlo. Por eso se evalúa ANTES
+# que las señales de facturación (evita que "pásame con un asesor sobre mi plan"
+# se quede atrapado en el pipeline de facturación).
+
+_HANDOFF_PATTERNS = [
+    r"\b(asesor|agente|representante)(a|es)?\b",
+    r"\bpersona\s+(real|humana)\b",
+    r"\bhablar\s+con\s+(alguien|un\s+humano|una\s+persona)\b",
+    r"\b(comun[ií]cam?e|transfi[ée]r[ée]m?e|pas[aá]m?e|deriv[aá]m?e)\s+(con|a)\b",
+    r"\bhumano\b",
+    r"\batenci[oó]n\s+humana\b",
+    r"\bquiero\s+hablar\s+con\s+alguien\b",
+]
+
+# ---------------------------------------------------------------------------
 # Pistas léxicas (SOLO una heurística de apoyo)
 # ---------------------------------------------------------------------------
 # Esta lista no pretende ser exhaustiva ni autoritativa: el LLM es quien decide
@@ -80,7 +98,7 @@ _FALLBACK_CONVERSACIONAL = (
 @dataclass
 class RoutingDecision:
     """Resultado del enrutamiento de un turno."""
-    intent: str                      # FACTURACION | SALUDO | DESPEDIDA | AGRADECIMIENTO | FUERA_DE_DOMINIO
+    intent: str                      # FACTURACION | SOLICITUD_AGENTE | SALUDO | DESPEDIDA | AGRADECIMIENTO | FUERA_DE_DOMINIO
     perfil_lexico: str               # FORMAL | CASUAL | USO_JERGAS
     respuesta: Optional[str] = None  # Texto ya redactado (solo turnos no-facturación)
     fuente: str = "DETERMINISTA"     # LLM | DETERMINISTA — para observabilidad
@@ -89,11 +107,21 @@ class RoutingDecision:
     def es_facturacion(self) -> bool:
         return self.intent == "FACTURACION"
 
+    @property
+    def es_solicitud_agente(self) -> bool:
+        return self.intent == "SOLICITUD_AGENTE"
+
 
 def has_billing_signals(message: str) -> bool:
     """¿El mensaje contiene vocabulario inequívoco de facturación?"""
     texto = message.lower()
     return any(re.search(p, texto) for p in _BILLING_PATTERNS)
+
+
+def has_handoff_signals(message: str) -> bool:
+    """¿El usuario está pidiendo explícitamente hablar con un agente humano?"""
+    texto = message.lower()
+    return any(re.search(p, texto) for p in _HANDOFF_PATTERNS)
 
 
 def detectar_perfil_lexico_heuristico(message: str, perfil_previo: Optional[str] = None) -> str:
@@ -118,6 +146,7 @@ def route(
     message: str,
     perfil_previo: Optional[str] = None,
     pending_emotions: Optional[List[Dict]] = None,
+    historial_conversacion: Optional[List[Dict]] = None,
 ) -> RoutingDecision:
     """
     Decide si el turno va al pipeline de facturación o se resuelve conversacionalmente.
@@ -125,7 +154,17 @@ def route(
     Para turnos conversacionales la respuesta ya viene redactada por el LLM, con la
     personalidad de Lucía y adaptada al registro del usuario.
     """
-    # 1. Camino rápido: señales claras de facturación → sin llamada extra al modelo.
+    # 1. Máxima prioridad: solicitud explícita de agente humano.
+    #    Va antes que facturación: "pásame con un asesor sobre mi plan" no debe
+    #    quedar atrapado explicando el recibo otra vez.
+    if has_handoff_signals(message):
+        return RoutingDecision(
+            intent="SOLICITUD_AGENTE",
+            perfil_lexico=detectar_perfil_lexico_heuristico(message, perfil_previo),
+            fuente="DETERMINISTA",
+        )
+
+    # 2. Camino rápido: señales claras de facturación → sin llamada extra al modelo.
     if has_billing_signals(message):
         return RoutingDecision(
             intent="FACTURACION",
@@ -133,11 +172,13 @@ def route(
             fuente="DETERMINISTA",
         )
 
-    # 2. Sin señales claras: decide el LLM (entiende jerga, ironía y contexto).
+    # 3. Sin señales claras (o mensaje corto ambiguo): decide el LLM, que ve el
+    #    historial reciente y entiende jerga, ironía y contexto.
     resultado = llm_service.classify_and_reply(
         user_message=message,
         perfil_previo=perfil_previo,
         pending_emotions=pending_emotions,
+        historial_conversacion=historial_conversacion,
     )
 
     if resultado:
@@ -146,8 +187,8 @@ def route(
 
         # El LLM detectó una consulta de facturación expresada sin vocabulario técnico
         # (p. ej. jerga: "oe, mi luz salió salada este mes").
-        if intent == "FACTURACION":
-            return RoutingDecision(intent="FACTURACION", perfil_lexico=perfil, fuente="LLM")
+        if intent in ("FACTURACION", "SOLICITUD_AGENTE"):
+            return RoutingDecision(intent=intent, perfil_lexico=perfil, fuente="LLM")
 
         respuesta = resultado.get("respuesta") or _FALLBACK_CONVERSACIONAL
         return RoutingDecision(

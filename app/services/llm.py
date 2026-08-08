@@ -38,6 +38,28 @@ def _build_llm(max_tokens: int = 1000, temperature: float = 0.3):
     )
 
 
+def _formatear_historial(turnos: Optional[List[Dict[str, Any]]], max_turnos: int = 8) -> str:
+    """
+    Convierte la bitácora acotada de la sesión en texto legible para el prompt.
+
+    Sin esto el modelo no tiene forma de saber qué ya se dijo en la sesión y
+    termina re-explicando lo mismo turno tras turno.
+    """
+    if not turnos:
+        return "Sin turnos previos: es el inicio de la conversación."
+
+    recientes = turnos[-max_turnos:]
+    lineas = []
+    for t in recientes:
+        rol = "Usuario" if t.get("role") == "user" else "Lucía"
+        texto = (t.get("text") or "").strip()
+        if not texto:
+            continue
+        etiqueta = f" [{t['intent']}]" if t.get("intent") else ""
+        lineas.append(f"{rol}{etiqueta}: {texto}")
+    return "\n".join(lineas) if lineas else "Sin turnos previos: es el inicio de la conversación."
+
+
 def _generate_mock_response(
     session_id: str, 
     user_message: str, 
@@ -102,7 +124,8 @@ def generate_response(
     rag_context: str,
     cross_sell_eligible: bool,
     pending_emotions: List[Dict],
-    perfil_lexico: Optional[str] = None
+    perfil_lexico: Optional[str] = None,
+    historial_conversacion: Optional[List[Dict[str, Any]]] = None,
 ) -> ChatResponse:
     """
     Simula la generación de lenguaje por el LLM o usa LangChain real con DeepSeek 
@@ -127,6 +150,16 @@ def generate_response(
         REGLA DE MONEDA: usa SIEMPRE el símbolo indicado en 'simbolo_moneda' del payload (soles peruanos).
         Está terminantemente prohibido usar cualquier otro símbolo o moneda (€, $, USD, EUR).
         Formato correcto: "S/ 119.90". Usa punto como separador decimal.
+
+        REGLA DE CONTINUIDAD (muy importante):
+        Abajo tienes los turnos recientes de esta misma conversación. Si ya le explicaste
+        al usuario esta variación de recibo en un turno anterior, NO la repitas de nuevo:
+        respondes directamente a lo que pregunta AHORA (asumiendo que ya conoce el contexto),
+        o solo añades el detalle nuevo que falte. Repetir la misma explicación en cada turno
+        genera la sensación de que no escuchas al usuario.
+
+        HISTORIAL RECIENTE DE LA CONVERSACIÓN:
+        {historial_conversacion}
 
         {format_instructions}
         
@@ -168,6 +201,7 @@ def generate_response(
                 "pending_emotions": json.dumps(pending_emotions, indent=2) if pending_emotions else "Ninguna",
                 "perfil_lexico": persona.normalizar_perfil(perfil_lexico),
                 "instruccion_perfil": persona.instruccion_registro(perfil_lexico),
+                "historial_conversacion": _formatear_historial(historial_conversacion),
                 "session_id": session_id,
                 "user_message": user_message
             })
@@ -197,6 +231,7 @@ def generate_response(
 
 INTENTS_VALIDOS = (
     "FACTURACION",
+    "SOLICITUD_AGENTE",
     "SALUDO",
     "DESPEDIDA",
     "AGRADECIMIENTO",
@@ -252,6 +287,15 @@ CAMPO "intent" — elige exactamente uno:
 - "FACTURACION": el usuario pregunta o reclama algo sobre su recibo, montos,
   cobros, plan, promociones, cuotas, deuda o servicio. Incluye quejas por precio
   y consultas expresadas con jerga o de forma indirecta.
+- "SOLICITUD_AGENTE": el MENSAJE ACTUAL pide explícitamente hablar con una
+  persona, un asesor o un agente humano, o rechaza seguir hablando con un bot/IA.
+  Esta intención tiene prioridad sobre FACTURACION si ambas aparecen juntas.
+  IMPORTANTE: clasifica solo según el mensaje actual. Si en el historial Lucía
+  ya derivó a un agente en un turno anterior pero el usuario sigue escribiendo
+  con normalidad (porque en esta conversación aún no llegó ningún agente),
+  NO vuelvas a clasificar como SOLICITUD_AGENTE salvo que el usuario lo esté
+  pidiendo de nuevo en su mensaje actual. Una solicitud pasada no contamina
+  la clasificación de los turnos siguientes.
 - "SALUDO": solo saluda o inicia conversación sin plantear todavía una consulta.
 - "DESPEDIDA": se está despidiendo o cerrando la conversación.
 - "AGRADECIMIENTO": agradece o expresa conformidad, sin nueva consulta.
@@ -269,7 +313,8 @@ CAMPO "perfil_lexico" — cómo escribe el usuario. Elige exactamente uno:
   "salado", "misio", "roche"), abreviaturas tipo "ntp", "xq", o escritura muy informal.
 
 CAMPO "respuesta"
-- Si "intent" es "FACTURACION": devuelve exactamente "".
+- Si "intent" es "FACTURACION" o "SOLICITUD_AGENTE": devuelve exactamente "".
+  (Estos dos casos los responde otro componente del sistema, no tú en este paso).
 - En cualquier otro caso: escribe la respuesta de Lucía, en primera persona,
   adaptada al perfil_lexico detectado.
 
@@ -294,6 +339,7 @@ def classify_and_reply(
     user_message: str,
     perfil_previo: Optional[str] = None,
     pending_emotions: Optional[List[Dict]] = None,
+    historial_conversacion: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Una sola llamada al LLM que clasifica la intención, detecta el registro
@@ -318,6 +364,13 @@ def classify_and_reply(
                 "\nComentarios emocionales previos del usuario aún no reconocidos: "
                 f"{'; '.join(textos)}. Si encaja con naturalidad, reconócelos brevemente.\n"
             )
+    if historial_conversacion:
+        contexto_extra += (
+            "\nHISTORIAL RECIENTE DE LA CONVERSACIÓN (úsalo para entender el contexto; "
+            "un mensaje corto como 'sí', 'ok' o 'por favor' normalmente responde al último "
+            "turno de Lucía, no es un tema nuevo):\n"
+            f"{_formatear_historial(historial_conversacion)}\n"
+        )
 
     system_prompt = _SYSTEM_CLASIFICACION.format(
         identidad=persona.IDENTIDAD_LUCIA,

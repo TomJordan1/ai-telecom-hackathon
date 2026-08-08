@@ -26,6 +26,32 @@ def update_historial(db: Session, session_id: str, updates: dict):
         db.refresh(historial)
     return historial
 
+MAX_TURNOS_HISTORIAL = 12  # ~6 intercambios usuario/Lucía; suficiente para dar
+                           # continuidad sin acumular contexto indefinidamente.
+
+
+def append_turno_conversacion(db: Session, session_id: str, role: str, text: str, intent: str = ""):
+    """
+    Añade un turno a la bitácora acotada de la sesión y recorta al límite.
+    role: 'user' | 'lucia'.
+    """
+    historial = db.query(models.HistorialInteracciones).filter(
+        models.HistorialInteracciones.session_id == session_id
+    ).first()
+    if not historial:
+        return None
+
+    turnos = list(historial.historial_conversacion or [])
+    turnos.append({"role": role, "text": text, "intent": intent})
+    if len(turnos) > MAX_TURNOS_HISTORIAL:
+        turnos = turnos[-MAX_TURNOS_HISTORIAL:]
+
+    historial.historial_conversacion = turnos
+    db.commit()
+    db.refresh(historial)
+    return historial
+
+
 def get_terminos_restringidos(db: Session):
     return db.query(models.TerminosRestringidos).all()
 

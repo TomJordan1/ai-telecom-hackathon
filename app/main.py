@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from app.core.config import settings
+from app.db.database import Base, engine, run_lightweight_migrations
+from app.db import models  # noqa: F401 - registra los modelos en Base antes de create_all
 from app.api.routes import router as chat_router
 from app.api.whatsapp import router as whatsapp_router
 from app.api.knowledge import router as knowledge_router
@@ -12,6 +14,11 @@ app = FastAPI(
     version=settings.VERSION,
     description="Backend API para Copiloto de Transparencia de Facturación (Lucía)"
 )
+
+# Crea tablas si no existen (entornos nuevos) y aplica migraciones ligeras
+# idempotentes para bases de datos SQLite ya existentes.
+Base.metadata.create_all(bind=engine)
+run_lightweight_migrations()
 
 # Set up CORS for frontend channels
 app.add_middleware(

@@ -1,3 +1,5 @@
+from typing import Optional
+
 from sqlalchemy.orm import Session
 from app.db import crud
 from app.services.deterministic import validate_compliance, calculate_billing_facts, evaluate_cross_sell_eligibility
@@ -9,6 +11,24 @@ from app.services.feedback_handler import register_new_case
 from app.services.intent_classifier import route
 from app.services import persona
 from app.core.schemas import ChatRequest, ChatResponse, MessageChunk, PersonalityMetadata
+
+
+def _texto_completo(response: ChatResponse) -> str:
+    """Concatena los chunks de una respuesta para guardarlos en la bitácora."""
+    return " ".join(m.text for m in response.messages if m.text)
+
+
+def _finalizar(db: Session, request: ChatRequest, response: ChatResponse) -> ChatResponse:
+    """
+    Punto único de salida: registra el turno (usuario + Lucía) en la bitácora
+    acotada de la sesión. Sin este registro, el siguiente turno no tiene forma
+    de saber qué ya se dijo y el modelo termina repitiéndose.
+    """
+    crud.append_turno_conversacion(db, request.session_id, "user", request.message)
+    crud.append_turno_conversacion(
+        db, request.session_id, "lucia", _texto_completo(response), response.intent_category
+    )
+    return response
 
 
 def process_message(request: ChatRequest, db: Session) -> ChatResponse:
@@ -23,23 +43,25 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     historial = crud.get_or_create_historial(db, request.session_id, request.user_id)
     comentarios = historial.comentarios_emocionales or []
     pending_emotions = [e for e in comentarios if not e.get("referenciado", False)]
+    historial_conversacion = historial.historial_conversacion or []
 
     # Paso 2: Pre-filtro de Compliance (Regex, antes de cualquier IA)
     blocked_message = validate_compliance(request.message, db)
     if blocked_message:
-        return ChatResponse(
+        return _finalizar(db, request, ChatResponse(
             session_id=request.session_id,
             intent_category="BLOQUEO_COMPLIANCE",
             sentiment_score=1,
             compliance_triggered=True,
             messages=[MessageChunk(text=blocked_message, type="explanation")]
-        )
+        ))
 
     # Paso 2.5: Enrutamiento de intención y perfilado lingüístico
     decision = route(
         message=request.message,
         perfil_previo=historial.perfil_lexico_usuario,
         pending_emotions=pending_emotions,
+        historial_conversacion=historial_conversacion,
     )
 
     # El registro lingüístico observado se persiste para dar continuidad a la sesión.
@@ -52,6 +74,27 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         f"perfil={perfil_lexico} fuente={decision.fuente}"
     )
 
+    # Solicitud explícita de agente humano: máxima prioridad, no se improvisa
+    # ni se re-explica facturación. Se deriva de inmediato.
+    if decision.es_solicitud_agente:
+        return _finalizar(db, request, ChatResponse(
+            session_id=request.session_id,
+            intent_category="SOLICITUD_AGENTE",
+            sentiment_score=historial.score_sentimiento,
+            requires_human_intervention=True,
+            confidence_score=99,
+            messages=[
+                MessageChunk(
+                    text="Entendido, te comunico con un asesor. En un momento un agente "
+                         "humano continuará contigo con todo el contexto de tu consulta. 🙏",
+                    type="explanation",
+                )
+            ],
+            personality_metadata=PersonalityMetadata(
+                lucia_tone=persona.tono_para_metadata(perfil_lexico)
+            ),
+        ))
+
     # Turno conversacional: se responde sin consultar datos de facturación.
     if not decision.es_facturacion:
         sentimiento = historial.score_sentimiento
@@ -59,7 +102,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             sentimiento = 5
             crud.update_historial(db, request.session_id, {"score_sentimiento": sentimiento})
 
-        return ChatResponse(
+        return _finalizar(db, request, ChatResponse(
             session_id=request.session_id,
             intent_category=decision.intent,
             sentiment_score=sentimiento,
@@ -69,7 +112,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             personality_metadata=PersonalityMetadata(
                 lucia_tone=persona.tono_para_metadata(perfil_lexico)
             ),
-        )
+        ))
 
     # Paso 3: Motor Investigador (Determinista)
     fact_payload = calculate_billing_facts(request.user_id, db)
@@ -94,7 +137,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
 
     # Si la incertidumbre supera el umbral → handoff inmediato
     if requires_handoff(uncertainty_score):
-        return ChatResponse(
+        return _finalizar(db, request, ChatResponse(
             session_id=request.session_id,
             intent_category="DERIVACION_INCERTIDUMBRE",
             sentiment_score=historial.score_sentimiento,
@@ -110,7 +153,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             personality_metadata=PersonalityMetadata(
                 lucia_tone=persona.tono_para_metadata(perfil_lexico)
             ),
-        )
+        ))
 
     # Paso 4: Búsqueda de Conocimiento (RAG) — solo si no hay caso conocido
     rag_context = retrieve_context(request.message) if not caso_match else "Caso conocido — RAG omitido."
@@ -139,6 +182,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         cross_sell_eligible=cross_sell_eligible,
         pending_emotions=pending_emotions,
         perfil_lexico=perfil_lexico,
+        historial_conversacion=historial_conversacion,
     )
 
     # Adjuntar el confidence_score (inverso de incertidumbre)
@@ -168,4 +212,4 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             uncertainty_score=uncertainty_score
         )
 
-    return response
+    return _finalizar(db, request, response)
