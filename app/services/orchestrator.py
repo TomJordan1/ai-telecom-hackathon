@@ -6,6 +6,7 @@ from app.services.llm import generate_response
 from app.services.case_matcher import match_caso
 from app.services.uncertainty_calculator import calculate_uncertainty, requires_handoff
 from app.services.feedback_handler import register_new_case
+from app.services.intent_classifier import classify_intent, get_conversational_response
 from app.core.schemas import ChatRequest, ChatResponse, MessageChunk
 
 def process_message(request: ChatRequest, db: Session) -> ChatResponse:
@@ -26,6 +27,19 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             sentiment_score=1,
             compliance_triggered=True,
             messages=[MessageChunk(text=blocked_message, type="explanation")]
+        )
+
+    # Paso 2.5: Clasificación de Intención (Determinista)
+    # Si el mensaje no es de facturación, responder conversacionalmente sin activar el pipeline pesado.
+    intent, sub_intent = classify_intent(request.message)
+    if intent != "FACTURACION":
+        conversational_text = get_conversational_response(intent, sub_intent)
+        return ChatResponse(
+            session_id=request.session_id,
+            intent_category=f"{intent}_{sub_intent}",
+            sentiment_score=historial.score_sentimiento,
+            confidence_score=99,
+            messages=[MessageChunk(text=conversational_text, type="hook")]
         )
 
     # Paso 3: Motor Investigador (Determinista)
