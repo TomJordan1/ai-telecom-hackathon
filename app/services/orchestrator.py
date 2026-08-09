@@ -343,15 +343,32 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         response.personality_metadata.hook_used = _hook_used(response)
 
     # Paso 7: Validación y Actualización de Memoria
-    if pending_emotions:
-        for emotion in comentarios:
-            emotion["referenciado"] = True
-
-    crud.update_historial(db, request.session_id, {
-        "comentarios_emocionales": comentarios,
+    updates = {
         "score_sentimiento": current_sentiment,
         "estado_resolucion": estado_resolucion,
-    })
+    }
+
+    # Los comentarios emocionales solo se reescriben si había alguno pendiente que
+    # marcar como referenciado, y releyéndolos de la BD en ese momento. Escribir el
+    # snapshot tomado al inicio del turno borraría el comentario que se acaba de
+    # detectar en este mismo mensaje (add_comentario_emocional), que es justo lo
+    # que hace que la memoria emocional persista entre turnos.
+    if pending_emotions:
+        ids_referenciados = {e.get("id") for e in pending_emotions}
+        historial_actual = crud.get_or_create_historial(db, request.session_id, request.user_id)
+        # Se construyen dicts NUEVOS en lugar de mutar los existentes: SQLAlchemy no
+        # detecta mutaciones en sitio dentro de una columna JSON, así que modificar
+        # los dicts cargados no generaría ningún UPDATE y el cambio se perdería.
+        comentarios_actuales = []
+        for emotion in (historial_actual.comentarios_emocionales or []):
+            copia = dict(emotion)
+            if copia.get("id") in ids_referenciados:
+                copia["referenciado"] = True
+                copia["reference_count"] = copia.get("reference_count", 0) + 1
+            comentarios_actuales.append(copia)
+        updates["comentarios_emocionales"] = comentarios_actuales
+
+    crud.update_historial(db, request.session_id, updates)
 
     # Paso 7.5: Si era un caso nuevo (sin match), registrar en cuarentena
     if not caso_match:

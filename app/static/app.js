@@ -3,8 +3,23 @@ const messageInput = document.getElementById('message-input');
 const sendButton = document.getElementById('send-button');
 const userSelect = document.getElementById('user-select');
 
-// Generar un ID de sesión único por pestaña
-const sessionId = 'sesion-' + Math.random().toString(36).substr(2, 9);
+// La memoria de Lucía está indexada por session_id, así que la sesión se
+// persiste en el navegador: al recargar o cerrar y volver a abrir, se retoma la
+// misma conversación (el historial y los comentarios emocionales viven en la BD).
+// Para empezar de cero: borrar 'lucia_session_id' de localStorage, o usar el
+// botón "Nueva conversación".
+const sessionId = (() => {
+    const guardada = localStorage.getItem('lucia_session_id');
+    if (guardada) return guardada;
+    const nueva = 'sesion-' + Math.random().toString(36).substr(2, 9);
+    localStorage.setItem('lucia_session_id', nueva);
+    return nueva;
+})();
+
+function nuevaConversacion() {
+    localStorage.removeItem('lucia_session_id');
+    location.reload();
+}
 
 function addMessage(text, sender, type = 'normal') {
     const messageDiv = document.createElement('div');
