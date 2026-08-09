@@ -1,0 +1,28 @@
+# Copiloto de Transparencia de Facturación (Lucía) - dependencias del backend
+#
+# Generado a partir de los imports reales del proyecto (no de un pip freeze
+# completo, que incluye sub-dependencias transitivas de langchain/langgraph
+# que no se usan directamente aquí).
+
+# --- API / Core ---
+fastapi==0.141.1
+uvicorn==0.52.1
+starlette==1.4.1
+
+# --- Validación y configuración ---
+pydantic==2.13.4
+pydantic-settings==2.14.2
+python-dotenv==1.2.2
+
+# --- Base de datos ---
+SQLAlchemy==2.0.51
+
+# --- LLM (DeepSeek vía interfaz compatible con OpenAI) ---
+langchain-core==1.5.3
+langchain-openai==1.4.1
+
+# --- HTTP saliente (WhatsApp Cloud API, health checks) ---
+requests==2.34.2
+
+# --- Bot de Telegram (scripts/telegram_bot.py) ---
+python-telegram-bot==22.8

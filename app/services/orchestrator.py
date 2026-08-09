@@ -81,10 +81,13 @@ def _registrar_auditoria(
     confidence_score: Optional[int] = None,
     uncertainty_score: Optional[float] = None,
     evidence: Optional[List[str]] = None,
+    handoff_context: Optional[Dict[str, Any]] = None,
 ):
     """
     Registra la decisión completa del turno para poder reconstruir el flujo
     en auditoría. Nunca debe interrumpir la respuesta al usuario si falla.
+    Cuando hay derivación a humano, también guarda handoff_context: es lo
+    que alimenta la cola de atención del panel de administración.
     """
     try:
         crud.create_audit_log(
@@ -99,6 +102,7 @@ def _registrar_auditoria(
             uncertainty_score=uncertainty_score,
             components_invoked=components_invoked,
             evidence=evidence,
+            handoff_context=handoff_context,
             latency_ms=int((time.monotonic() - started_at) * 1000),
         )
     except Exception as e:
@@ -202,6 +206,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         _registrar_auditoria(
             db, request.session_id, started_at, response.intent_category, components_invoked,
             requires_human_intervention=True, confidence_score=response.confidence_score,
+            handoff_context=response.handoff_context,
         )
         return _finalizar(db, request, response)
 
@@ -282,7 +287,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             db, request.session_id, started_at, response.intent_category, components_invoked,
             detected_event=fact_payload.get("detected_event"), requires_human_intervention=True,
             confidence_score=response.confidence_score, uncertainty_score=uncertainty_score,
-            evidence=fact_payload.get("evidence"),
+            evidence=fact_payload.get("evidence"), handoff_context=response.handoff_context,
         )
         return _finalizar(db, request, response)
 

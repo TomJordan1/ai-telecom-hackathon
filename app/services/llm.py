@@ -438,3 +438,70 @@ def classify_and_reply(
     except Exception as e:
         print(f"Error clasificando intención con LLM: {e}. Se usará el fallback determinista.")
         return None
+
+
+# ---------------------------------------------------------------------------
+# Alertas proactivas
+# ---------------------------------------------------------------------------
+#
+# A diferencia de generate_response (que reacciona a un mensaje del usuario),
+# aquí Lucía escribe primero. El dato de la alerta (upcoming_alerts) ya viene
+# calculado de forma determinista; el LLM solo lo traduce a un mensaje cálido
+# y proactivo. Nunca inventa la fecha, el monto ni el concepto.
+
+_SYSTEM_ALERTA_PROACTIVA = """{identidad}
+
+TAREA
+Vas a iniciar tú la conversación (el usuario no te ha escrito). Redacta un
+mensaje breve, cálido y proactivo que avise sobre lo siguiente, usando
+EXCLUSIVAMENTE estos datos verificados (no inventes ningún dato adicional):
+
+Concepto: {concepto}
+Fecha en que termina: {fecha_fin}
+Días restantes: {dias_restantes}
+Impacto estimado en el recibo: {impacto_estimado}
+
+REGLAS
+- 1 a 2 frases, tono cercano, sin tecnicismos.
+- Menciona el impacto estimado usando exactamente el valor dado (ya viene con
+  el símbolo de moneda correcto). No inventes ni redondees otro monto.
+- Cierra invitando a la persona a preguntar si quiere más detalle o ver opciones.
+- No menciones puntajes, IDs, ni nada de la mecánica interna del sistema.
+"""
+
+
+def generate_proactive_alert_message(alert: Dict[str, Any], perfil_lexico: Optional[str] = None) -> str:
+    """
+    Redacta el texto de una alerta proactiva a partir de un upcoming_alert ya
+    calculado de forma determinista. Si el LLM no está disponible, usa una
+    plantilla fija (sin inventar nada, solo interpola los mismos datos verificados).
+    """
+    fallback = (
+        f"¡Hola! Quería avisarte con tiempo: tu {alert.get('concepto', 'promoción')} "
+        f"termina el {alert.get('fecha_fin')} (en {alert.get('dias_restantes')} días). "
+        f"El impacto estimado en tu próximo recibo sería de {alert.get('impacto_estimado')}. "
+        "¿Quieres que revisemos juntos tus opciones?"
+    )
+
+    if not llm_is_available():
+        return fallback
+
+    try:
+        llm = _build_llm(max_tokens=200, temperature=0.5)
+        system_prompt = _SYSTEM_ALERTA_PROACTIVA.format(
+            identidad=persona.IDENTIDAD_LUCIA,
+            concepto=alert.get("concepto", "Descuento activo"),
+            fecha_fin=alert.get("fecha_fin"),
+            dias_restantes=alert.get("dias_restantes"),
+            impacto_estimado=alert.get("impacto_estimado"),
+        )
+        instruccion = persona.instruccion_registro(perfil_lexico)
+        resultado = llm.invoke([
+            ("system", system_prompt + f"\n\nGUÍA DE REGISTRO: {instruccion}"),
+            ("user", "Genera el mensaje proactivo."),
+        ])
+        texto = (getattr(resultado, "content", "") or "").strip()
+        return texto or fallback
+    except Exception as e:
+        print(f"Error generando alerta proactiva con LLM: {e}. Se usará fallback.")
+        return fallback

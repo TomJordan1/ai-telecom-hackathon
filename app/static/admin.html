@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lucía - Panel de Administración</title>
+    <link rel="stylesheet" href="admin.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="admin-shell">
+        <header class="admin-header">
+            <div class="admin-title">
+                <div class="avatar">L</div>
+                <div>
+                    <h1>Panel de Administración</h1>
+                    <p>Copiloto de Facturación — Lucía</p>
+                </div>
+            </div>
+            <button id="refresh-all" class="btn-secondary">↻ Actualizar todo</button>
+        </header>
+
+        <nav class="admin-tabs">
+            <button class="tab-btn active" data-tab="handoff">Cola de Atención Humana</button>
+            <button class="tab-btn" data-tab="cuarentena">Casos en Cuarentena</button>
+            <button class="tab-btn" data-tab="base-casos">Base de Conocimiento</button>
+            <button class="tab-btn" data-tab="proactivas">Alertas Proactivas</button>
+        </nav>
+
+        <main class="admin-content">
+            <!-- TAB: Cola de Atención Humana -->
+            <section class="tab-panel active" id="tab-handoff">
+                <div class="panel-header">
+                    <h2>Casos derivados a un asesor</h2>
+                    <label class="toggle-pendientes">
+                        <input type="checkbox" id="filtro-pendientes" checked>
+                        Solo pendientes
+                    </label>
+                </div>
+                <div id="handoff-list" class="card-list">
+                    <p class="empty-state">Cargando...</p>
+                </div>
+            </section>
+
+            <!-- TAB: Cuarentena -->
+            <section class="tab-panel" id="tab-cuarentena">
+                <div class="panel-header">
+                    <h2>Casos nuevos pendientes de validación</h2>
+                </div>
+                <div id="cuarentena-list" class="card-list">
+                    <p class="empty-state">Cargando...</p>
+                </div>
+            </section>
+
+            <!-- TAB: Base de Casos -->
+            <section class="tab-panel" id="tab-base-casos">
+                <div class="panel-header">
+                    <h2>Soluciones validadas y reutilizables</h2>
+                </div>
+                <div id="base-casos-list" class="card-list">
+                    <p class="empty-state">Cargando...</p>
+                </div>
+            </section>
+
+            <!-- TAB: Alertas Proactivas -->
+            <section class="tab-panel" id="tab-proactivas">
+                <div class="panel-header">
+                    <h2>Barrido de alertas proactivas</h2>
+                </div>
+                <p class="tab-description">
+                    Revisa a todos los usuarios y envía un mensaje proactivo (por WhatsApp o Telegram)
+                    a quienes tengan una promoción próxima a vencer. En producción esto lo dispararía
+                    un cron job; aquí se controla manualmente.
+                </p>
+                <button id="run-proactive" class="btn-primary">▶ Ejecutar barrido ahora</button>
+                <div id="proactive-result" class="card-list"></div>
+            </section>
+        </main>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="admin.js"></script>
+</body>
+</html>

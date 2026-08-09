@@ -7,7 +7,7 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.db.database import engine, Base, SessionLocal
-from app.db.models import ReciboCliente, HistorialInteracciones, CatalogoPlanes, TerminosRestringidos
+from app.db.models import ReciboCliente, HistorialInteracciones, CatalogoPlanes, TerminosRestringidos, ContactoUsuario
 
 def init_db():
     # Create tables
@@ -77,6 +77,17 @@ def init_db():
         },
         plan_actual="Internet Hogar 300 Mbps"
     ))
+
+    # 4. Poblar contactos mock (necesarios para las alertas proactivas salientes).
+    # Los números son ficticios; en modo mock (sin WHATSAPP_TOKEN) solo se imprimen a consola.
+    contactos = [
+        ContactoUsuario(user_id="user_a_fin_promo", whatsapp_number="51900000001", telegram_chat_id=None),
+        ContactoUsuario(user_id="user_b_prorrateo", whatsapp_number="51900000002", telegram_chat_id=None),
+        ContactoUsuario(user_id="user_c_equipo", whatsapp_number="51900000003", telegram_chat_id=None),
+        ContactoUsuario(user_id="user_d_reconexion", whatsapp_number="51900000004", telegram_chat_id=None),
+        ContactoUsuario(user_id="user_e_alerta_proactiva", whatsapp_number="51900000005", telegram_chat_id=None),
+    ]
+    db.add_all(contactos)
 
     db.commit()
     print("Datos de prueba (Mocks) insertados exitosamente en SQLite.")

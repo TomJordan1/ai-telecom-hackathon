@@ -3,6 +3,20 @@ import uuid
 from datetime import datetime
 from app.db.database import Base
 
+class ContactoUsuario(Base):
+    """
+    Mapeo entre el user_id interno y sus canales de contacto reales.
+    Necesario para las alertas proactivas: Lucía no puede escribirle primero
+    a un usuario si no sabe a qué número de WhatsApp o chat de Telegram enviarle.
+    En este mock, se puebla manualmente; en producción vendría del CRM/BrainyBill.
+    """
+    __tablename__ = "contactos_usuario"
+
+    user_id = Column(String, primary_key=True, index=True)
+    whatsapp_number = Column(String, nullable=True)
+    telegram_chat_id = Column(String, nullable=True)
+
+
 class ReciboCliente(Base):
     __tablename__ = "recibos_cliente"
     
@@ -107,3 +121,7 @@ class AuditLog(Base):
     components_invoked = Column(JSON, default=list)
     evidence = Column(JSON, nullable=True)
     latency_ms = Column(Integer, nullable=True)
+    # Contexto de derivación (solo se llena cuando requires_human_intervention=True).
+    # Permite construir la cola de atención humana sin reconstruir todo el flujo.
+    handoff_context = Column(JSON, nullable=True)
+    atendido = Column(Boolean, default=False)

@@ -5,6 +5,7 @@ from typing import Optional
 from app.db.database import get_db
 from app.db import crud
 from app.services.feedback_handler import register_feedback, get_followup_message
+from app.services.proactive_alerts import run_proactive_check
 
 router = APIRouter(prefix="/api/v1", tags=["Feedback & Admin"])
 
@@ -90,6 +91,55 @@ def validate_case(caso_id: str, request: ValidarCasoRequest, db: Session = Depen
         "nuevo_caso_id": nuevo_caso.id,
         "patron": nuevo_caso.patron_problema
     }
+
+@router.get("/admin/handoff-queue")
+def list_handoff_queue(solo_pendientes: bool = True, db: Session = Depends(get_db)):
+    """
+    Lista los turnos derivados a un humano (solicitud explícita o incertidumbre
+    alta), con el contexto ya empaquetado (handoff_context) para que un agente
+    pueda continuar la conversación sin pedirle al cliente que repita todo.
+    """
+    entradas = crud.get_handoff_queue(db, solo_pendientes=solo_pendientes)
+    return {
+        "total": len(entradas),
+        "casos": [
+            {
+                "id": e.id,
+                "session_id": e.session_id,
+                "intent_category": e.intent_category,
+                "detected_event": e.detected_event,
+                "handoff_context": e.handoff_context,
+                "atendido": e.atendido,
+                "fecha": e.timestamp.isoformat() if e.timestamp else None,
+            }
+            for e in entradas
+        ]
+    }
+
+
+@router.post("/admin/handoff-queue/{audit_log_id}/atender")
+def marcar_handoff_atendido(audit_log_id: int, db: Session = Depends(get_db)):
+    """Marca un caso de la cola de derivación como ya atendido por un agente."""
+    entrada = crud.marcar_handoff_atendido(db, audit_log_id)
+    if not entrada:
+        raise HTTPException(status_code=404, detail="Registro no encontrado")
+    return {"status": "ok", "id": entrada.id, "atendido": entrada.atendido}
+
+
+@router.post("/admin/proactive-check")
+def trigger_proactive_check(db: Session = Depends(get_db)):
+    """
+    Dispara manualmente el barrido de alertas proactivas: revisa a todos los
+    usuarios, detecta promociones próximas a vencer (upcoming_alerts, ya
+    calculado deterministamente) y envía un mensaje proactivo por WhatsApp
+    o Telegram si el usuario tiene un canal de contacto registrado.
+
+    En producción esto lo dispararía un cron job o scheduler externo; aquí se
+    deja como un botón manual para poder controlarlo durante la demo.
+    """
+    resumen = run_proactive_check(db)
+    return {"status": "ok", **resumen}
+
 
 @router.get("/admin/base-casos")
 def list_base_casos(db: Session = Depends(get_db)):

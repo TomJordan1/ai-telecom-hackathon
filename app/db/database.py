@@ -34,3 +34,12 @@ def run_lightweight_migrations():
                 "ALTER TABLE historial_interacciones "
                 "ADD COLUMN historial_conversacion JSON DEFAULT '[]'"
             ))
+
+    if "audit_log" in inspector.get_table_names():
+        columnas_audit = {c["name"] for c in inspector.get_columns("audit_log")}
+        if "handoff_context" not in columnas_audit:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE audit_log ADD COLUMN handoff_context JSON"))
+        if "atendido" not in columnas_audit:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE audit_log ADD COLUMN atendido BOOLEAN DEFAULT 0"))

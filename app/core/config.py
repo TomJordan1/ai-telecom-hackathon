@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     WHATSAPP_PHONE_ID: str | None = None
     WHATSAPP_VERIFY_TOKEN: str = "lucia_hackathon_secret"
 
+    # Telegram Bot Settings (usado tanto por scripts/telegram_bot.py como por
+    # el envío proactivo saliente desde el backend)
+    TELEGRAM_TOKEN: str | None = None
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 settings = Settings()

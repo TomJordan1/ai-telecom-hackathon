@@ -8,6 +8,30 @@ def get_recibos_by_user(db: Session, user_id: str, limit: int = 6):
              .limit(limit)\
              .all()
 
+def get_all_user_ids(db: Session):
+    """Lista todos los user_id distintos que tienen al menos un recibo."""
+    rows = db.query(models.ReciboCliente.user_id).distinct().all()
+    return [r[0] for r in rows]
+
+
+def get_contacto_usuario(db: Session, user_id: str):
+    return db.query(models.ContactoUsuario).filter(models.ContactoUsuario.user_id == user_id).first()
+
+
+def upsert_contacto_usuario(db: Session, user_id: str, whatsapp_number: str = None, telegram_chat_id: str = None):
+    contacto = get_contacto_usuario(db, user_id)
+    if not contacto:
+        contacto = models.ContactoUsuario(user_id=user_id)
+        db.add(contacto)
+    if whatsapp_number is not None:
+        contacto.whatsapp_number = whatsapp_number
+    if telegram_chat_id is not None:
+        contacto.telegram_chat_id = telegram_chat_id
+    db.commit()
+    db.refresh(contacto)
+    return contacto
+
+
 def get_or_create_historial(db: Session, session_id: str, user_id: str):
     historial = db.query(models.HistorialInteracciones).filter(models.HistorialInteracciones.session_id == session_id).first()
     if not historial:
@@ -124,6 +148,27 @@ def create_audit_log(db: Session, **kwargs):
     db.add(log)
     db.commit()
     return log
+
+
+def get_handoff_queue(db: Session, solo_pendientes: bool = True):
+    """
+    Lista los turnos que requirieron intervención humana, con el contexto
+    empaquetado para que un agente pueda continuar sin pedirle al cliente
+    que repita todo. Es la cola de atención del panel de administración.
+    """
+    query = db.query(models.AuditLog).filter(models.AuditLog.requires_human_intervention == True)
+    if solo_pendientes:
+        query = query.filter(models.AuditLog.atendido == False)
+    return query.order_by(models.AuditLog.timestamp.desc()).all()
+
+
+def marcar_handoff_atendido(db: Session, audit_log_id: int):
+    entrada = db.query(models.AuditLog).filter(models.AuditLog.id == audit_log_id).first()
+    if entrada:
+        entrada.atendido = True
+        db.commit()
+        db.refresh(entrada)
+    return entrada
 
 # --- Base de Casos ---
 
