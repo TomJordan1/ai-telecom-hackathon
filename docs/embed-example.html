@@ -1,0 +1,233 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Demo widget Lucía</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; }
+  #lucia-launcher {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: #019DF4;
+    color: #fff;
+    border: none;
+    box-shadow: 0 8px 20px rgba(0,0,0,0.25);
+    cursor: pointer;
+    font-size: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    transition: transform 0.15s ease;
+  }
+  #lucia-launcher:hover { transform: scale(1.06); }
+  #lucia-launcher.hidden { display: none; }
+  #lucia-widget {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 340px;
+    height: 480px;
+    display: none; /* se activa con la clase .open */
+    flex-direction: column;
+    border-radius: 16px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+    overflow: hidden;
+    background: #fff;
+    z-index: 9999;
+    transition: width 0.2s ease, height 0.2s ease;
+  }
+  #lucia-widget.open { display: flex; }
+  #lucia-widget.maximized {
+    width: 420px;
+    height: 680px;
+    max-height: 90vh;
+  }
+  #lucia-widget.minimized {
+    height: 52px;
+  }
+  #lucia-widget.minimized #lucia-messages,
+  #lucia-widget.minimized #lucia-quick-replies,
+  #lucia-widget.minimized #lucia-input-row {
+    display: none;
+  }
+
+  #lucia-header {
+    background: #019DF4; /* azul Movistar de referencia */
+    color: #fff;
+    padding: 12px 16px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    cursor: default;
+  }
+  #lucia-header-title { display: flex; align-items: center; gap: 8px; }
+  #lucia-header-controls { display: flex; gap: 4px; }
+  .lucia-icon-btn {
+    background: transparent;
+    border: none;
+    color: #fff;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+  .lucia-icon-btn:hover { background: rgba(255,255,255,0.2); }
+
+  #lucia-messages {
+    flex: 1;
+    padding: 12px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .msg { padding: 8px 12px; border-radius: 12px; max-width: 80%; font-size: 14px; }
+  .msg.user { align-self: flex-end; background: #019DF4; color: #fff; }
+  .msg.lucia { align-self: flex-start; background: #F0F2F5; color: #111; }
+  #lucia-quick-replies { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; flex-shrink: 0; }
+  .quick-reply-btn {
+    border: 1px solid #019DF4; color: #019DF4; background: #fff;
+    border-radius: 999px; padding: 6px 10px; font-size: 12px; cursor: pointer;
+  }
+  #lucia-input-row { display: flex; border-top: 1px solid #eee; flex-shrink: 0; }
+  #lucia-input { flex: 1; border: none; padding: 12px; font-size: 14px; }
+  #lucia-send { border: none; background: #019DF4; color: #fff; padding: 0 16px; cursor: pointer; }
+</style>
+</head>
+<body>
+<button id="lucia-launcher" title="Habla con Lucía">💬</button>
+
+<div id="lucia-widget">
+  <div id="lucia-header">
+    <div id="lucia-header-title">
+      <span>Lucía · Asistente Movistar</span>
+    </div>
+
+    <div id="lucia-header-controls">
+      <button id="lucia-minimize" class="lucia-icon-btn" title="Minimizar">–</button>
+      <button id="lucia-maximize" class="lucia-icon-btn" title="Maximizar">▢</button>
+      <button id="lucia-close" class="lucia-icon-btn" title="Cerrar">×</button>
+    </div>
+  </div>
+  <div id="lucia-messages"></div>
+  <div id="lucia-quick-replies"></div>
+  <div id="lucia-input-row">
+    <input id="lucia-input" placeholder="Escribe tu mensaje..." />
+    <button id="lucia-send">Enviar</button>
+  </div>
+</div>
+
+<script>
+  const API_URL = 'http://localhost:3000/api/website/chat';
+  const sessionId = localStorage.getItem('lucia_session_id') ||
+    (() => {
+      const id = 'sess_' + Math.random().toString(36).slice(2);
+      localStorage.setItem('lucia_session_id', id);
+      return id;
+    })();
+
+  const launcherEl = document.getElementById('lucia-launcher');
+  const widgetEl = document.getElementById('lucia-widget');
+  const messagesEl = document.getElementById('lucia-messages');
+  const quickRepliesEl = document.getElementById('lucia-quick-replies');
+  const inputEl = document.getElementById('lucia-input');
+
+  let hasGreeted = false; // para no repetir el saludo cada vez que se reabre
+  function openWidget() {
+    widgetEl.classList.add('open');
+    widgetEl.classList.remove('minimized');
+    launcherEl.classList.add('hidden');
+    if (!hasGreeted) {
+      hasGreeted = true;
+      addMessage('Hola, soy Lucía 👋 ¿En qué te ayudo hoy?', 'lucia');
+      renderQuickReplies(['Ver mi plan', 'Pagar mi recibo', 'Soporte técnico', 'Hablar con un asesor']);
+    }
+    inputEl.focus();
+  }
+
+  function closeWidget() {
+    widgetEl.classList.remove('open', 'maximized', 'minimized');
+    launcherEl.classList.remove('hidden');
+  }
+
+  function toggleMinimize() {
+    widgetEl.classList.toggle('minimized');
+  }
+
+  function toggleMaximize() {
+    widgetEl.classList.toggle('maximized');
+    widgetEl.classList.remove('minimized');
+  }
+
+  launcherEl.addEventListener('click', openWidget);
+  document.getElementById('lucia-close').addEventListener('click', closeWidget);
+  document.getElementById('lucia-minimize').addEventListener('click', toggleMinimize);
+  document.getElementById('lucia-maximize').addEventListener('click', toggleMaximize);
+  function addMessage(text, sender) {
+    const div = document.createElement('div');
+    div.className = `msg ${sender}`;
+    div.textContent = text;
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function renderQuickReplies(options = []) {
+    quickRepliesEl.innerHTML = '';
+    options.forEach((opt) => {
+      const btn = document.createElement('button');
+      btn.className = 'quick-reply-btn';
+      btn.textContent = opt;
+      btn.onclick = () => sendMessage(opt);
+      quickRepliesEl.appendChild(btn);
+    });
+  }
+
+  async function sendMessage(text) {
+    if (!text) return;
+    addMessage(text, 'user');
+    inputEl.value = '';
+    quickRepliesEl.innerHTML = '';
+
+    try {
+      const res = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, message: text }),
+      });
+      const data = await res.json();
+      addMessage(data.reply_text, 'lucia');
+
+      const quickReplyBlock = (data.blocks || []).find((b) => b.type === 'quick_replies');
+      if (quickReplyBlock) renderQuickReplies(quickReplyBlock.options);
+
+      if (data.escalate_to_human) {
+        addMessage('Te voy a conectar con un asesor humano en breve.', 'lucia');
+      }
+    } catch (e) {
+      addMessage('Hubo un problema de conexión. Intenta de nuevo en un momento.', 'lucia');
+    }
+  }
+
+  document.getElementById('lucia-send').onclick = () => sendMessage(inputEl.value.trim());
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendMessage(inputEl.value.trim());
+  });
+
+</script>
+
+</body>
+</html>

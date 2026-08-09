@@ -1,3 +1,6 @@
-.env__pycache__/
-*.pyc
+node_modules/
 .env
+*.log
+.DS_Store
+dist/
+coverage/
