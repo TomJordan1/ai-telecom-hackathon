@@ -8,6 +8,7 @@ from app.core.schemas import (
     RecommendedPlan,
     BillSummary,
     PersonalityMetadata,
+    UpcomingAlert,
 )
 from app.core.config import settings
 from app.services import persona
@@ -67,7 +68,8 @@ def _generate_mock_response(
     rag_context: str,
     cross_sell_eligible: bool,
     pending_emotions: List[Dict],
-    perfil_lexico: Optional[str] = None
+    perfil_lexico: Optional[str] = None,
+    recommended_plan: Optional[Dict[str, Any]] = None,
 ) -> ChatResponse:
     """Fallback if no API key is provided."""
     intent_category = deterministic_payload.get("detected_event", "CONSULTA_GENERAL")
@@ -94,22 +96,27 @@ def _generate_mock_response(
     if "error" not in deterministic_payload:
         messages.append(MessageChunk(text=f"Recibo actual ({deterministic_payload['current_bill']['issue_date']}): S/ {deterministic_payload['current_bill']['amount']}", type="evidence", delay_ms=1500))
 
+    # El plan recomendado SIEMPRE viene verificado del catálogo (recommend_plan_upgrade).
+    # Si no hay un candidato real, no se ofrece nada, aunque cross_sell_eligible sea True.
     suggestion = PlanOptimizerSuggestion()
-    if cross_sell_eligible:
+    if cross_sell_eligible and recommended_plan:
         suggestion = PlanOptimizerSuggestion(
             available=True,
-            mensaje_comercial="Dato curioso: Lucía encontró un plan con mayor velocidad. ¿Te ayudo a activarlo?",
-            plan_recomendado=RecommendedPlan(nombre="Internet 600 Mbps", precio=99.90, beneficios="Doble velocidad, Movistar Play incluido (Mock)")
+            mensaje_comercial=f"Dato curioso: Lucía encontró el plan {recommended_plan['nombre']} que podría convenirte más. ¿Te ayudo a activarlo?",
+            plan_recomendado=RecommendedPlan(**recommended_plan)
         )
         
     historial = [BillSummary(month=pb['month'], amount=pb['amount']) for pb in deterministic_payload.get('previous_bills', [])]
-        
+
+    upcoming_alerts = [UpcomingAlert(**a) for a in (deterministic_payload.get("upcoming_alerts") or [])]
+
     return ChatResponse(
         session_id=session_id,
         intent_category=intent_category,
         sentiment_score=3,
         messages=messages,
         historical_bills_summary=historial,
+        upcoming_alerts=upcoming_alerts,
         plan_optimizer_suggestion=suggestion,
         personality_metadata=PersonalityMetadata(
             lucia_tone=persona.tono_para_metadata(perfil_lexico)
@@ -126,6 +133,7 @@ def generate_response(
     pending_emotions: List[Dict],
     perfil_lexico: Optional[str] = None,
     historial_conversacion: Optional[List[Dict[str, Any]]] = None,
+    recommended_plan: Optional[Dict[str, Any]] = None,
 ) -> ChatResponse:
     """
     Simula la generación de lenguaje por el LLM o usa LangChain real con DeepSeek 
@@ -171,8 +179,18 @@ def generate_response(
         
         ESTADO COMERCIAL:
         ¿Es elegible para venta cruzada?: {cross_sell_eligible}
-        Si es elegible (True), incluye obligatoriamente una sugerencia comercial atractiva en 'plan_optimizer_suggestion'.
-        Si no es elegible (False), 'plan_optimizer_suggestion.available' DEBE ser False.
+        PLAN RECOMENDADO VERIFICADO (dato de solo lectura, ya validado contra el catálogo real):
+        {recommended_plan}
+        Si es elegible (True) Y hay un plan recomendado verificado (no es null), completa
+        'plan_optimizer_suggestion.available' = true y usa EXACTAMENTE el nombre, precio y
+        beneficios del plan recomendado verificado — no inventes otro plan, otro precio ni
+        otro nombre. Redacta solo el mensaje comercial en tono natural.
+        Si no es elegible (False) o el plan recomendado verificado es null,
+        'plan_optimizer_suggestion.available' DEBE ser False y no debes mencionar ningún plan.
+
+        ALERTAS PROACTIVAS VERIFICADAS (si la lista no está vacía, menciona la más próxima a
+        vencer de forma proactiva y amable; si está vacía, no inventes ninguna alerta):
+        {upcoming_alerts}
         
         EMOCIONES PENDIENTES DEL USUARIO:
         {pending_emotions}
@@ -198,6 +216,8 @@ def generate_response(
                 "deterministic_payload": json.dumps(deterministic_payload, indent=2),
                 "rag_context": rag_context,
                 "cross_sell_eligible": str(cross_sell_eligible),
+                "recommended_plan": json.dumps(recommended_plan) if recommended_plan else "null",
+                "upcoming_alerts": json.dumps(deterministic_payload.get("upcoming_alerts") or []),
                 "pending_emotions": json.dumps(pending_emotions, indent=2) if pending_emotions else "Ninguna",
                 "perfil_lexico": persona.normalizar_perfil(perfil_lexico),
                 "instruccion_perfil": persona.instruccion_registro(perfil_lexico),
@@ -207,15 +227,33 @@ def generate_response(
             })
             # El tono es decisión de la capa de personalidad, no del modelo.
             response_obj.personality_metadata.lucia_tone = persona.tono_para_metadata(perfil_lexico)
+
+            # Blindaje anti-alucinación: si el LLM propuso un plan igual estando
+            # deshabilitado el cross-sell, o inventó datos distintos al verificado,
+            # se corrige aquí en vez de confiar ciegamente en la salida del modelo.
+            if not cross_sell_eligible or not recommended_plan:
+                response_obj.plan_optimizer_suggestion = PlanOptimizerSuggestion()
+            elif response_obj.plan_optimizer_suggestion.available:
+                response_obj.plan_optimizer_suggestion.plan_recomendado = RecommendedPlan(**recommended_plan)
+
+            # upcoming_alerts es un hecho determinista: no se deja que el LLM lo omita o invente.
+            response_obj.upcoming_alerts = [UpcomingAlert(**a) for a in (deterministic_payload.get("upcoming_alerts") or [])]
+
             return response_obj
             
         except Exception as e:
             # Si el LLM falla, hace fallback al mock
             print(f"Error con LLM DeepSeek: {e}. Fallback a Mock.")
-            return _generate_mock_response(session_id, user_message, deterministic_payload, rag_context, cross_sell_eligible, pending_emotions, perfil_lexico)
+            return _generate_mock_response(
+                session_id, user_message, deterministic_payload, rag_context,
+                cross_sell_eligible, pending_emotions, perfil_lexico, recommended_plan
+            )
     else:
         # Usar el mock por defecto si no hay API KEY
-        return _generate_mock_response(session_id, user_message, deterministic_payload, rag_context, cross_sell_eligible, pending_emotions, perfil_lexico)
+        return _generate_mock_response(
+            session_id, user_message, deterministic_payload, rag_context,
+            cross_sell_eligible, pending_emotions, perfil_lexico, recommended_plan
+        )
 
 
 # ---------------------------------------------------------------------------

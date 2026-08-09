@@ -83,3 +83,27 @@ class CuarentenaCasos(Base):
     fecha_followup = Column(DateTime, nullable=True)
     estado_validacion = Column(String, default="PENDIENTE")  # PENDIENTE | APROBADO | RECHAZADO
     incertidumbre_score = Column(Float, default=0.5)
+
+
+class AuditLog(Base):
+    """
+    Registro estructurado de cada decisión del orquestador: qué se detectó,
+    qué componentes se invocaron, qué se decidió y cuánto tardó. Permite
+    reconstruir el flujo completo para auditoría, tal como exige el diseño
+    original. No almacena el texto de las respuestas, solo metadatos de decisión.
+    """
+    __tablename__ = "audit_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String, index=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    intent_category = Column(String, nullable=True)
+    detected_event = Column(String, nullable=True)
+    compliance_triggered = Column(Boolean, default=False)
+    requires_human_intervention = Column(Boolean, default=False)
+    cross_sell_eligible = Column(Boolean, default=False)
+    confidence_score = Column(Integer, nullable=True)
+    uncertainty_score = Column(Float, nullable=True)
+    components_invoked = Column(JSON, default=list)
+    evidence = Column(JSON, nullable=True)
+    latency_ms = Column(Integer, nullable=True)

@@ -17,6 +17,61 @@ def get_or_create_historial(db: Session, session_id: str, user_id: str):
         db.refresh(historial)
     return historial
 
+EMOTIONAL_COMMENT_TTL_DAYS = 14  # expiración: no crecer el contexto indefinidamente
+MAX_COMENTARIOS_EMOCIONALES = 5  # consolidación: solo se conservan los más recientes
+
+
+def add_comentario_emocional(db: Session, session_id: str, text: str, importance: int = 3):
+    """
+    Registra una nueva frase emocional detectada en el mensaje del usuario.
+    Es la contraparte de creación que faltaba: hasta ahora solo se leían y
+    marcaban como referenciados comentarios existentes, nunca se generaban.
+    Aplica expiración (TTL) y un tope de cantidad para evitar crecimiento
+    indefinido del contexto, tal como especifica el diseño original.
+    """
+    from datetime import datetime, timedelta
+
+    historial = db.query(models.HistorialInteracciones).filter(
+        models.HistorialInteracciones.session_id == session_id
+    ).first()
+    if not historial:
+        return None
+
+    ahora = datetime.utcnow()
+    comentarios = list(historial.comentarios_emocionales or [])
+
+    # Consolidación: descartar los ya vencidos antes de agregar uno nuevo.
+    vigentes = []
+    for c in comentarios:
+        expira = c.get("expires_at")
+        try:
+            if expira and datetime.fromisoformat(expira) < ahora:
+                continue
+        except ValueError:
+            pass
+        vigentes.append(c)
+
+    nuevo_id = (max((c.get("id", 0) for c in vigentes), default=0)) + 1
+    vigentes.append({
+        "id": nuevo_id,
+        "text": text,
+        "timestamp": ahora.isoformat(),
+        "importance": importance,
+        "reference_count": 0,
+        "expires_at": (ahora + timedelta(days=EMOTIONAL_COMMENT_TTL_DAYS)).isoformat(),
+        "referenciado": False,
+    })
+
+    # Resumen/consolidación: si se excede el tope, se conservan los más recientes.
+    if len(vigentes) > MAX_COMENTARIOS_EMOCIONALES:
+        vigentes = vigentes[-MAX_COMENTARIOS_EMOCIONALES:]
+
+    historial.comentarios_emocionales = vigentes
+    db.commit()
+    db.refresh(historial)
+    return historial
+
+
 def update_historial(db: Session, session_id: str, updates: dict):
     historial = db.query(models.HistorialInteracciones).filter(models.HistorialInteracciones.session_id == session_id).first()
     if historial:
@@ -57,6 +112,18 @@ def get_terminos_restringidos(db: Session):
 
 def get_catalogo_planes(db: Session):
     return db.query(models.CatalogoPlanes).filter(models.CatalogoPlanes.activo == True).all()
+
+# --- Observabilidad ---
+
+def create_audit_log(db: Session, **kwargs):
+    """
+    Registra una decisión del orquestador. Nunca debe bloquear el flujo
+    principal si falla: la observabilidad es secundaria a responder al usuario.
+    """
+    log = models.AuditLog(**kwargs)
+    db.add(log)
+    db.commit()
+    return log
 
 # --- Base de Casos ---
 

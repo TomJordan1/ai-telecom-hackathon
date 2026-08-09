@@ -28,7 +28,7 @@ def calculate_uncertainty(
 
     # 3. El evento detectado no es ambiguo
     evento = fact_payload.get("detected_event", "")
-    eventos_claros = {"FIN_PROMOCION", "PRORRATEO_CAMBIO_PLAN", "CUOTA_EQUIPO", "REDUCCION_TARIFA"}
+    eventos_claros = {"FIN_PROMOCION", "PRORRATEO_CAMBIO_PLAN", "CUOTA_EQUIPO", "REDUCCION_TARIFA", "RECONEXION_MOROSIDAD"}
     if evento in eventos_claros:
         score -= 0.10
 
