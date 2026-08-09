@@ -1,7 +1,17 @@
 import json
-from typing import Dict, Any, List
-from app.core.schemas import ChatResponse, MessageChunk, PlanOptimizerSuggestion, RecommendedPlan, BillSummary
+import re
+from typing import Dict, Any, List, Optional
+from app.core.schemas import (
+    ChatResponse,
+    MessageChunk,
+    PlanOptimizerSuggestion,
+    RecommendedPlan,
+    BillSummary,
+    PersonalityMetadata,
+    UpcomingAlert,
+)
 from app.core.config import settings
+from app.services import persona
 
 # Attempt to import LangChain; will be used if API Key is present
 try:
@@ -13,13 +23,53 @@ except ImportError:
     LANGCHAIN_AVAILABLE = False
 
 
+def llm_is_available() -> bool:
+    """¿Hay un LLM real configurado y utilizable?"""
+    return bool(settings.DEEPSEEK_API_KEY) and not settings.USE_MOCK_LLM and LANGCHAIN_AVAILABLE
+
+
+def _build_llm(max_tokens: int = 1000, temperature: float = 0.3):
+    """Construye el cliente de DeepSeek vía la interfaz compatible con OpenAI."""
+    return ChatOpenAI(
+        model="deepseek-chat",
+        api_key=settings.DEEPSEEK_API_KEY,
+        base_url="https://api.deepseek.com",
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+
+
+def _formatear_historial(turnos: Optional[List[Dict[str, Any]]], max_turnos: int = 8) -> str:
+    """
+    Convierte la bitácora acotada de la sesión en texto legible para el prompt.
+
+    Sin esto el modelo no tiene forma de saber qué ya se dijo en la sesión y
+    termina re-explicando lo mismo turno tras turno.
+    """
+    if not turnos:
+        return "Sin turnos previos: es el inicio de la conversación."
+
+    recientes = turnos[-max_turnos:]
+    lineas = []
+    for t in recientes:
+        rol = "Usuario" if t.get("role") == "user" else "Lucía"
+        texto = (t.get("text") or "").strip()
+        if not texto:
+            continue
+        etiqueta = f" [{t['intent']}]" if t.get("intent") else ""
+        lineas.append(f"{rol}{etiqueta}: {texto}")
+    return "\n".join(lineas) if lineas else "Sin turnos previos: es el inicio de la conversación."
+
+
 def _generate_mock_response(
     session_id: str, 
     user_message: str, 
     deterministic_payload: Dict[str, Any], 
     rag_context: str,
     cross_sell_eligible: bool,
-    pending_emotions: List[Dict]
+    pending_emotions: List[Dict],
+    perfil_lexico: Optional[str] = None,
+    recommended_plan: Optional[Dict[str, Any]] = None,
 ) -> ChatResponse:
     """Fallback if no API key is provided."""
     intent_category = deterministic_payload.get("detected_event", "CONSULTA_GENERAL")
@@ -46,23 +96,31 @@ def _generate_mock_response(
     if "error" not in deterministic_payload:
         messages.append(MessageChunk(text=f"Recibo actual ({deterministic_payload['current_bill']['issue_date']}): S/ {deterministic_payload['current_bill']['amount']}", type="evidence", delay_ms=1500))
 
+    # El plan recomendado SIEMPRE viene verificado del catálogo (recommend_plan_upgrade).
+    # Si no hay un candidato real, no se ofrece nada, aunque cross_sell_eligible sea True.
     suggestion = PlanOptimizerSuggestion()
-    if cross_sell_eligible:
+    if cross_sell_eligible and recommended_plan:
         suggestion = PlanOptimizerSuggestion(
             available=True,
-            mensaje_comercial="Dato curioso: Lucía encontró un plan con mayor velocidad. ¿Te ayudo a activarlo?",
-            plan_recomendado=RecommendedPlan(nombre="Internet 600 Mbps", precio=99.90, beneficios="Doble velocidad, Movistar Play incluido (Mock)")
+            mensaje_comercial=f"Dato curioso: Lucía encontró el plan {recommended_plan['nombre']} que podría convenirte más. ¿Te ayudo a activarlo?",
+            plan_recomendado=RecommendedPlan(**recommended_plan)
         )
         
     historial = [BillSummary(month=pb['month'], amount=pb['amount']) for pb in deterministic_payload.get('previous_bills', [])]
-        
+
+    upcoming_alerts = [UpcomingAlert(**a) for a in (deterministic_payload.get("upcoming_alerts") or [])]
+
     return ChatResponse(
         session_id=session_id,
         intent_category=intent_category,
         sentiment_score=3,
         messages=messages,
         historical_bills_summary=historial,
-        plan_optimizer_suggestion=suggestion
+        upcoming_alerts=upcoming_alerts,
+        plan_optimizer_suggestion=suggestion,
+        personality_metadata=PersonalityMetadata(
+            lucia_tone=persona.tono_para_metadata(perfil_lexico)
+        )
     )
 
 
@@ -72,7 +130,10 @@ def generate_response(
     deterministic_payload: Dict[str, Any], 
     rag_context: str,
     cross_sell_eligible: bool,
-    pending_emotions: List[Dict]
+    pending_emotions: List[Dict],
+    perfil_lexico: Optional[str] = None,
+    historial_conversacion: Optional[List[Dict[str, Any]]] = None,
+    recommended_plan: Optional[Dict[str, Any]] = None,
 ) -> ChatResponse:
     """
     Simula la generación de lenguaje por el LLM o usa LangChain real con DeepSeek 
@@ -80,26 +141,34 @@ def generate_response(
     """
     
     # Check if we should use the real LLM
-    if settings.DEEPSEEK_API_KEY and not settings.USE_MOCK_LLM and LANGCHAIN_AVAILABLE:
+    if llm_is_available():
         # 1. Configurar el LLM apuntando a DeepSeek vía la interfaz de OpenAI
-        llm = ChatOpenAI(
-            model="deepseek-chat", # Asumiendo el modelo general de DeepSeek (V3/Coder)
-            api_key=settings.DEEPSEEK_API_KEY,
-            base_url="https://api.deepseek.com", # Base URL oficial de DeepSeek
-            max_tokens=1000,
-            temperature=0.3 # Baja temperatura para que respete estrictamente los datos
-        )
+        llm = _build_llm(max_tokens=1000, temperature=0.3)
         
         # 2. Configurar el Output Parser para garantizar la estructura
         parser = PydanticOutputParser(pydantic_object=ChatResponse)
         
         # 3. Diseñar el Prompt
         system_template = """
-        Eres Lucía, la asistente de facturación B2C de una empresa de telecomunicaciones. 
+        Eres Lucía, la asistente de facturación B2C de una empresa de telecomunicaciones en Perú.
         Tu objetivo es explicar variaciones de recibos de manera empática y clara.
         REGLA DE ORO: NO PUEDES hacer cálculos matemáticos. Toda la información de montos, 
         fechas y variaciones DEBE salir estrictamente del 'Deterministic Payload'. No inventes números.
-        
+
+        REGLA DE MONEDA: usa SIEMPRE el símbolo indicado en 'simbolo_moneda' del payload (soles peruanos).
+        Está terminantemente prohibido usar cualquier otro símbolo o moneda (€, $, USD, EUR).
+        Formato correcto: "S/ 119.90". Usa punto como separador decimal.
+
+        REGLA DE CONTINUIDAD (muy importante):
+        Abajo tienes los turnos recientes de esta misma conversación. Si ya le explicaste
+        al usuario esta variación de recibo en un turno anterior, NO la repitas de nuevo:
+        respondes directamente a lo que pregunta AHORA (asumiendo que ya conoce el contexto),
+        o solo añades el detalle nuevo que falte. Repetir la misma explicación en cada turno
+        genera la sensación de que no escuchas al usuario.
+
+        HISTORIAL RECIENTE DE LA CONVERSACIÓN:
+        {historial_conversacion}
+
         {format_instructions}
         
         INFORMACIÓN DETERMINISTA (Verdad absoluta, no la modifiques):
@@ -110,13 +179,26 @@ def generate_response(
         
         ESTADO COMERCIAL:
         ¿Es elegible para venta cruzada?: {cross_sell_eligible}
-        Si es elegible (True), incluye obligatoriamente una sugerencia comercial atractiva en 'plan_optimizer_suggestion'.
-        Si no es elegible (False), 'plan_optimizer_suggestion.available' DEBE ser False.
+        PLAN RECOMENDADO VERIFICADO (dato de solo lectura, ya validado contra el catálogo real):
+        {recommended_plan}
+        Si es elegible (True) Y hay un plan recomendado verificado (no es null), completa
+        'plan_optimizer_suggestion.available' = true y usa EXACTAMENTE el nombre, precio y
+        beneficios del plan recomendado verificado — no inventes otro plan, otro precio ni
+        otro nombre. Redacta solo el mensaje comercial en tono natural.
+        Si no es elegible (False) o el plan recomendado verificado es null,
+        'plan_optimizer_suggestion.available' DEBE ser False y no debes mencionar ningún plan.
+
+        ALERTAS PROACTIVAS VERIFICADAS (si la lista no está vacía, menciona la más próxima a
+        vencer de forma proactiva y amable; si está vacía, no inventes ninguna alerta):
+        {upcoming_alerts}
         
         EMOCIONES PENDIENTES DEL USUARIO:
         {pending_emotions}
         (Si hay emociones aquí, asegúrate de referenciarlas sutilmente en tus mensajes).
-        
+
+        REGISTRO LINGÜÍSTICO DEL USUARIO: {perfil_lexico}
+        {instruccion_perfil}
+
         SESIÓN ACTUAL: {session_id}
         """
         
@@ -134,16 +216,292 @@ def generate_response(
                 "deterministic_payload": json.dumps(deterministic_payload, indent=2),
                 "rag_context": rag_context,
                 "cross_sell_eligible": str(cross_sell_eligible),
+                "recommended_plan": json.dumps(recommended_plan) if recommended_plan else "null",
+                "upcoming_alerts": json.dumps(deterministic_payload.get("upcoming_alerts") or []),
                 "pending_emotions": json.dumps(pending_emotions, indent=2) if pending_emotions else "Ninguna",
+                "perfil_lexico": persona.normalizar_perfil(perfil_lexico),
+                "instruccion_perfil": persona.instruccion_registro(perfil_lexico),
+                "historial_conversacion": _formatear_historial(historial_conversacion),
                 "session_id": session_id,
                 "user_message": user_message
             })
+            # El tono es decisión de la capa de personalidad, no del modelo.
+            response_obj.personality_metadata.lucia_tone = persona.tono_para_metadata(perfil_lexico)
+
+            # Blindaje anti-alucinación: si el LLM propuso un plan igual estando
+            # deshabilitado el cross-sell, o inventó datos distintos al verificado,
+            # se corrige aquí en vez de confiar ciegamente en la salida del modelo.
+            if not cross_sell_eligible or not recommended_plan:
+                response_obj.plan_optimizer_suggestion = PlanOptimizerSuggestion()
+            elif response_obj.plan_optimizer_suggestion.available:
+                response_obj.plan_optimizer_suggestion.plan_recomendado = RecommendedPlan(**recommended_plan)
+
+            # upcoming_alerts es un hecho determinista: no se deja que el LLM lo omita o invente.
+            response_obj.upcoming_alerts = [UpcomingAlert(**a) for a in (deterministic_payload.get("upcoming_alerts") or [])]
+
             return response_obj
             
         except Exception as e:
             # Si el LLM falla, hace fallback al mock
             print(f"Error con LLM DeepSeek: {e}. Fallback a Mock.")
-            return _generate_mock_response(session_id, user_message, deterministic_payload, rag_context, cross_sell_eligible, pending_emotions)
+            return _generate_mock_response(
+                session_id, user_message, deterministic_payload, rag_context,
+                cross_sell_eligible, pending_emotions, perfil_lexico, recommended_plan
+            )
     else:
         # Usar el mock por defecto si no hay API KEY
-        return _generate_mock_response(session_id, user_message, deterministic_payload, rag_context, cross_sell_eligible, pending_emotions)
+        return _generate_mock_response(
+            session_id, user_message, deterministic_payload, rag_context,
+            cross_sell_eligible, pending_emotions, perfil_lexico, recommended_plan
+        )
+
+
+# ---------------------------------------------------------------------------
+# Turnos conversacionales (no facturación)
+# ---------------------------------------------------------------------------
+#
+# Aquí el LLM hace lo único que sabe hacer bien y le está permitido: entender
+# lenguaje natural (incluidas jergas peruanas) y redactar. NO recibe ningún dato
+# de facturación, porque no lo necesita para saludar o redirigir una conversación.
+#
+# Esto sustituye cualquier catálogo de frases prearmadas: no es posible enumerar
+# todas las formas en que alguien puede escribir, así que no se intenta.
+
+INTENTS_VALIDOS = (
+    "FACTURACION",
+    "SOLICITUD_AGENTE",
+    "SALUDO",
+    "DESPEDIDA",
+    "AGRADECIMIENTO",
+    "FUERA_DE_DOMINIO",
+)
+
+
+def _extraer_json(texto: str) -> Optional[Dict[str, Any]]:
+    """
+    Extrae el primer objeto JSON de la respuesta del modelo.
+    Tolera bloques markdown y texto adicional alrededor.
+    """
+    if not texto:
+        return None
+
+    limpio = texto.strip()
+    # Quitar cercos markdown (```json ... ```)
+    limpio = re.sub(r"^```(?:json)?\s*", "", limpio)
+    limpio = re.sub(r"\s*```$", "", limpio)
+
+    try:
+        return json.loads(limpio)
+    except json.JSONDecodeError:
+        pass
+
+    # Buscar el primer objeto balanceado
+    inicio = limpio.find("{")
+    if inicio == -1:
+        return None
+    profundidad = 0
+    for i, ch in enumerate(limpio[inicio:], start=inicio):
+        if ch == "{":
+            profundidad += 1
+        elif ch == "}":
+            profundidad -= 1
+            if profundidad == 0:
+                try:
+                    return json.loads(limpio[inicio:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+_SYSTEM_CLASIFICACION = """{identidad}
+
+TAREA
+Analiza el mensaje del usuario y devuelve EXCLUSIVAMENTE un objeto JSON válido,
+sin texto adicional y sin bloques de código, con esta forma:
+
+{{"intent": "...", "perfil_lexico": "...", "respuesta": "..."}}
+
+CAMPO "intent" — elige exactamente uno:
+- "FACTURACION": el usuario pregunta o reclama algo sobre su recibo, montos,
+  cobros, plan, promociones, cuotas, deuda o servicio. Incluye quejas por precio
+  y consultas expresadas con jerga o de forma indirecta.
+- "SOLICITUD_AGENTE": el MENSAJE ACTUAL pide explícitamente hablar con una
+  persona, un asesor o un agente humano, o rechaza seguir hablando con un bot/IA.
+  Esta intención tiene prioridad sobre FACTURACION si ambas aparecen juntas.
+  IMPORTANTE: clasifica solo según el mensaje actual. Si en el historial Lucía
+  ya derivó a un agente en un turno anterior pero el usuario sigue escribiendo
+  con normalidad (porque en esta conversación aún no llegó ningún agente),
+  NO vuelvas a clasificar como SOLICITUD_AGENTE salvo que el usuario lo esté
+  pidiendo de nuevo en su mensaje actual. Una solicitud pasada no contamina
+  la clasificación de los turnos siguientes.
+- "SALUDO": solo saluda o inicia conversación sin plantear todavía una consulta.
+- "DESPEDIDA": se está despidiendo o cerrando la conversación.
+- "AGRADECIMIENTO": agradece o expresa conformidad, sin nueva consulta.
+- "FUERA_DE_DOMINIO": cualquier otra cosa (charla personal, bromas, preguntas
+  sobre ti, temas ajenos a telecomunicaciones).
+
+Ante duda razonable entre FACTURACION y otra categoría, elige FACTURACION:
+es mejor revisar el recibo que ignorar una consulta legítima.
+
+CAMPO "perfil_lexico" — cómo escribe el usuario. Elige exactamente uno:
+- "FORMAL": redacción cuidada, trato de usted, sin coloquialismos.
+- "CASUAL": español natural y relajado, sin jergas marcadas.
+- "USO_JERGAS": coloquialismos o jerga peruana (p. ej. "pe", "causa", "chibolo",
+  "manyas", "ya fue", "oe", "bravazo", "yapa", "al toque", "chamba", "plata",
+  "salado", "misio", "roche"), abreviaturas tipo "ntp", "xq", o escritura muy informal.
+
+CAMPO "respuesta"
+- Si "intent" es "FACTURACION" o "SOLICITUD_AGENTE": devuelve exactamente "".
+  (Estos dos casos los responde otro componente del sistema, no tú en este paso).
+- En cualquier otro caso: escribe la respuesta de Lucía, en primera persona,
+  adaptada al perfil_lexico detectado.
+
+REGLAS DE LA RESPUESTA CONVERSACIONAL
+- Breve: 1 o 2 frases.
+- Nunca menciones montos, recibos concretos, fechas ni cifras: en este turno no
+  tienes acceso a datos de facturación y no debes inventarlos.
+- No inventes información sobre la cuenta del usuario.
+- Si el mensaje es ajeno a tu especialidad, responde con naturalidad y buen humor,
+  y reconduce con amabilidad hacia lo que sí puedes resolver. No seas cortante ni
+  repitas siempre la misma fórmula.
+- Si el usuario pregunta algo personal sobre ti, respóndele con simpatía y sin
+  fingir que eres humana.
+- Adapta el registro al usuario sin perder nunca la cordialidad ni la corrección.
+
+GUÍA DE REGISTRO PARA ESTE MENSAJE
+{instruccion_registro_general}
+"""
+
+
+def classify_and_reply(
+    user_message: str,
+    perfil_previo: Optional[str] = None,
+    pending_emotions: Optional[List[Dict]] = None,
+    historial_conversacion: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Una sola llamada al LLM que clasifica la intención, detecta el registro
+    lingüístico y, si el turno no es de facturación, redacta la respuesta de Lucía.
+
+    Retorna un dict {intent, perfil_lexico, respuesta} o None si el LLM no está
+    disponible o falla (el llamador decide el fallback).
+    """
+    if not llm_is_available():
+        return None
+
+    contexto_extra = ""
+    if perfil_previo:
+        contexto_extra += (
+            f"\nRegistro detectado en turnos anteriores: {persona.normalizar_perfil(perfil_previo)} "
+            "(úsalo como referencia, pero prioriza el mensaje actual).\n"
+        )
+    if pending_emotions:
+        textos = [e.get("text", "") for e in pending_emotions if e.get("text")]
+        if textos:
+            contexto_extra += (
+                "\nComentarios emocionales previos del usuario aún no reconocidos: "
+                f"{'; '.join(textos)}. Si encaja con naturalidad, reconócelos brevemente.\n"
+            )
+    if historial_conversacion:
+        contexto_extra += (
+            "\nHISTORIAL RECIENTE DE LA CONVERSACIÓN (úsalo para entender el contexto; "
+            "un mensaje corto como 'sí', 'ok' o 'por favor' normalmente responde al último "
+            "turno de Lucía, no es un tema nuevo):\n"
+            f"{_formatear_historial(historial_conversacion)}\n"
+        )
+
+    system_prompt = _SYSTEM_CLASIFICACION.format(
+        identidad=persona.IDENTIDAD_LUCIA,
+        instruccion_registro_general=persona.instruccion_registro(perfil_previo),
+    ) + contexto_extra
+
+    try:
+        llm = _build_llm(max_tokens=400, temperature=0.6)
+        resultado = llm.invoke([
+            ("system", system_prompt),
+            ("user", user_message),
+        ])
+        datos = _extraer_json(getattr(resultado, "content", "") or "")
+        if not datos:
+            return None
+
+        intent = str(datos.get("intent", "")).strip().upper()
+        if intent not in INTENTS_VALIDOS:
+            return None
+
+        return {
+            "intent": intent,
+            "perfil_lexico": persona.normalizar_perfil(datos.get("perfil_lexico")),
+            "respuesta": (datos.get("respuesta") or "").strip(),
+        }
+
+    except Exception as e:
+        print(f"Error clasificando intención con LLM: {e}. Se usará el fallback determinista.")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Alertas proactivas
+# ---------------------------------------------------------------------------
+#
+# A diferencia de generate_response (que reacciona a un mensaje del usuario),
+# aquí Lucía escribe primero. El dato de la alerta (upcoming_alerts) ya viene
+# calculado de forma determinista; el LLM solo lo traduce a un mensaje cálido
+# y proactivo. Nunca inventa la fecha, el monto ni el concepto.
+
+_SYSTEM_ALERTA_PROACTIVA = """{identidad}
+
+TAREA
+Vas a iniciar tú la conversación (el usuario no te ha escrito). Redacta un
+mensaje breve, cálido y proactivo que avise sobre lo siguiente, usando
+EXCLUSIVAMENTE estos datos verificados (no inventes ningún dato adicional):
+
+Concepto: {concepto}
+Fecha en que termina: {fecha_fin}
+Días restantes: {dias_restantes}
+Impacto estimado en el recibo: {impacto_estimado}
+
+REGLAS
+- 1 a 2 frases, tono cercano, sin tecnicismos.
+- Menciona el impacto estimado usando exactamente el valor dado (ya viene con
+  el símbolo de moneda correcto). No inventes ni redondees otro monto.
+- Cierra invitando a la persona a preguntar si quiere más detalle o ver opciones.
+- No menciones puntajes, IDs, ni nada de la mecánica interna del sistema.
+"""
+
+
+def generate_proactive_alert_message(alert: Dict[str, Any], perfil_lexico: Optional[str] = None) -> str:
+    """
+    Redacta el texto de una alerta proactiva a partir de un upcoming_alert ya
+    calculado de forma determinista. Si el LLM no está disponible, usa una
+    plantilla fija (sin inventar nada, solo interpola los mismos datos verificados).
+    """
+    fallback = (
+        f"¡Hola! Quería avisarte con tiempo: tu {alert.get('concepto', 'promoción')} "
+        f"termina el {alert.get('fecha_fin')} (en {alert.get('dias_restantes')} días). "
+        f"El impacto estimado en tu próximo recibo sería de {alert.get('impacto_estimado')}. "
+        "¿Quieres que revisemos juntos tus opciones?"
+    )
+
+    if not llm_is_available():
+        return fallback
+
+    try:
+        llm = _build_llm(max_tokens=200, temperature=0.5)
+        system_prompt = _SYSTEM_ALERTA_PROACTIVA.format(
+            identidad=persona.IDENTIDAD_LUCIA,
+            concepto=alert.get("concepto", "Descuento activo"),
+            fecha_fin=alert.get("fecha_fin"),
+            dias_restantes=alert.get("dias_restantes"),
+            impacto_estimado=alert.get("impacto_estimado"),
+        )
+        instruccion = persona.instruccion_registro(perfil_lexico)
+        resultado = llm.invoke([
+            ("system", system_prompt + f"\n\nGUÍA DE REGISTRO: {instruccion}"),
+            ("user", "Genera el mensaje proactivo."),
+        ])
+        texto = (getattr(resultado, "content", "") or "").strip()
+        return texto or fallback
+    except Exception as e:
+        print(f"Error generando alerta proactiva con LLM: {e}. Se usará fallback.")
+        return fallback

@@ -20,7 +20,8 @@ async def verify_webhook(request: Request):
 
     if mode and token:
         if mode == "subscribe" and token == settings.WHATSAPP_VERIFY_TOKEN:
-            return Response(content=challenge, status_code=200)
+            # Meta requiere que devuelvas el challenge como texto plano directamente
+            return Response(content=challenge, status_code=200, media_type="text/plain")
     return Response(content="Forbidden", status_code=403)
 
 @router.post("/webhook/whatsapp")
@@ -31,17 +32,24 @@ async def receive_whatsapp_message(request: Request, background_tasks: Backgroun
     """
     try:
         body = await request.json()
+        print(f"[WA WEBHOOK] Body recibido: {body}")
         
-        # Parsear el JSON crudo que envía Meta (es anidado)
+        # Parsear el JSON crudo que envía Meta
         if body.get("object"):
             for entry in body.get("entry", []):
                 for change in entry.get("changes", []):
                     value = change.get("value", {})
                     messages = value.get("messages", [])
                     
+                    # Meta envía notificaciones de status (delivered, read) que no son mensajes
+                    if not messages:
+                        print(f"[WA WEBHOOK] No hay mensajes en este evento (probablemente un status update)")
+                        continue
+                    
                     if messages:
                         message = messages[0]
                         phone_number = message["from"]
+                        print(f"[WA WEBHOOK] Mensaje de {phone_number}: tipo={message['type']}")
                         
                         # Extraer el texto o el botón presionado
                         user_text = ""
@@ -50,12 +58,10 @@ async def receive_whatsapp_message(request: Request, background_tasks: Backgroun
                         elif message["type"] == "interactive":
                             interactive = message["interactive"]
                             if interactive["type"] == "button_reply":
-                                user_text = interactive["button_reply"]["id"] # buy_yes o buy_no
+                                user_text = interactive["button_reply"]["title"]
                                 
                         if user_text:
-                            # 1. En el caso de WhatsApp, usamos el número de teléfono como user_id real
-                            # Pero para que funcione con nuestros mocks locales (sin BD real), forzaremos el mock.
-                            # En producción, aquí buscaríamos el user_id a partir del phone_number.
+                            print(f"[WA WEBHOOK] Texto extraido: '{user_text}' -> procesando...")
                             mock_user_id = "user_a_fin_promo"
                             
                             chat_request = ChatRequest(
@@ -67,12 +73,18 @@ async def receive_whatsapp_message(request: Request, background_tasks: Backgroun
                             
                             # 2. Orquestar (Pasar por Determinismo, RAG, y LLM)
                             chat_response = process_message(chat_request, db)
+                            print(f"[WA WEBHOOK] Respuesta generada: {len(chat_response.messages)} chunks")
                             
                             # 3. Enviar la respuesta vía WhatsApp de forma asíncrona (Background Task)
                             background_tasks.add_task(process_and_send_whatsapp, phone_number, chat_response)
+                            print(f"[WA WEBHOOK] Tarea de envio programada para {phone_number}")
+                        else:
+                            print(f"[WA WEBHOOK] No se pudo extraer texto del mensaje tipo={message['type']}")
                             
         return Response(content="EVENT_RECEIVED", status_code=200)
         
     except Exception as e:
-        print(f"Error procesando Webhook de WA: {e}")
+        import traceback
+        print(f"[WA WEBHOOK ERROR] {e}")
+        traceback.print_exc()
         return Response(content="ERROR", status_code=500)

@@ -7,7 +7,7 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.db.database import engine, Base, SessionLocal
-from app.db.models import ReciboCliente, HistorialInteracciones, CatalogoPlanes, TerminosRestringidos
+from app.db.models import ReciboCliente, HistorialInteracciones, CatalogoPlanes, TerminosRestringidos, ContactoUsuario
 
 def init_db():
     # Create tables
@@ -55,6 +55,39 @@ def init_db():
     # Compró un repetidor de 120 soles financiado en 6 cuotas de 20 soles.
     db.add(ReciboCliente(user_id="user_c_equipo", mes_emision="2026-07", monto_total=99.90, fecha_emision=datetime(2026, 7, 1), conceptos_facturados={"cargo_fijo": 99.90}, plan_actual="Internet Hogar 300 Mbps"))
     db.add(ReciboCliente(user_id="user_c_equipo", mes_emision="2026-08", monto_total=119.90, fecha_emision=datetime(2026, 8, 1), conceptos_facturados={"cargo_fijo": 99.90, "cuota_equipo_1_de_6": 20.00}, plan_actual="Internet Hogar 300 Mbps"))
+
+    # Usuario D: Escenario de Reconexión por Suspensión Morosa
+    # El servicio fue suspendido por falta de pago; al reconectar se aplica un cargo fijo de reconexión.
+    db.add(ReciboCliente(user_id="user_d_reconexion", mes_emision="2026-07", monto_total=69.90, fecha_emision=datetime(2026, 7, 1), conceptos_facturados={"cargo_fijo": 69.90}, plan_actual="Internet Hogar 100 Mbps"))
+    db.add(ReciboCliente(user_id="user_d_reconexion", mes_emision="2026-08", monto_total=99.90, fecha_emision=datetime(2026, 8, 1), conceptos_facturados={"cargo_fijo": 69.90, "cargo_reconexion": 30.00}, plan_actual="Internet Hogar 100 Mbps"))
+
+    # Usuario E: Escenario de Alerta Proactiva (promo activa a punto de vencer)
+    # Sirve para demostrar 'upcoming_alerts': la promo termina en 5 días desde la fecha del recibo actual.
+    db.add(ReciboCliente(user_id="user_e_alerta_proactiva", mes_emision="2026-07", monto_total=79.90, fecha_emision=datetime(2026, 7, 1), conceptos_facturados={"cargo_fijo": 99.90, "descuento_promo": -20.00}, plan_actual="Internet Hogar 300 Mbps"))
+    db.add(ReciboCliente(
+        user_id="user_e_alerta_proactiva", mes_emision="2026-08", monto_total=79.90, fecha_emision=datetime(2026, 8, 1),
+        conceptos_facturados={
+            "cargo_fijo": 99.90,
+            "descuento_promo": -20.00,
+            "promo_activa": {
+                "nombre_concepto": "Descuento Internet Hogar 300 Mbps",
+                "fecha_fin": "2026-08-06",
+                "descuento": -20.00,
+            },
+        },
+        plan_actual="Internet Hogar 300 Mbps"
+    ))
+
+    # 4. Poblar contactos mock (necesarios para las alertas proactivas salientes).
+    # Los números son ficticios; en modo mock (sin WHATSAPP_TOKEN) solo se imprimen a consola.
+    contactos = [
+        ContactoUsuario(user_id="user_a_fin_promo", whatsapp_number="51900000001", telegram_chat_id=None),
+        ContactoUsuario(user_id="user_b_prorrateo", whatsapp_number="51900000002", telegram_chat_id=None),
+        ContactoUsuario(user_id="user_c_equipo", whatsapp_number="51900000003", telegram_chat_id=None),
+        ContactoUsuario(user_id="user_d_reconexion", whatsapp_number="51900000004", telegram_chat_id=None),
+        ContactoUsuario(user_id="user_e_alerta_proactiva", whatsapp_number="51900000005", telegram_chat_id=None),
+    ]
+    db.add_all(contactos)
 
     db.commit()
     print("Datos de prueba (Mocks) insertados exitosamente en SQLite.")
