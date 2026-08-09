@@ -26,6 +26,10 @@ def send_whatsapp_text(to_number: str, text: str):
         response.raise_for_status()
     except Exception as e:
         print(f"Error enviando WhatsApp: {e}")
+        try:
+            print(f"  Detalle de Meta: {response.text}")
+        except Exception:
+            pass
 
 def send_whatsapp_interactive(to_number: str, text: str, buttons: list):
     """Envía un mensaje con botones interactivos vía WhatsApp Cloud API."""
