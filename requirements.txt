@@ -16,6 +16,20 @@ python-dotenv==1.2.2
 
 # --- Base de datos ---
 SQLAlchemy==2.0.51
+# Driver de PostgreSQL. Necesario cuando DATABASE_URL apunta a Supabase; con
+# SQLite no se usa, pero se instala para que el mismo requirements sirva en local
+# y en producción.
+psycopg2-binary==2.9.12
+
+# --- Capa RAG (Supabase + pgvector) ---
+supabase==2.13.0
+
+# Embeddings locales para EMBEDDING_PROVIDER=local (all-MiniLM-L6-v2, 384 dims).
+# Runtime ONNX, ~80 MB, sin API externa ni costo por token.
+fastembed==0.8.0
+# Alternativa más pesada al anterior (~2 GB con torch). Solo si prefieres el
+# ecosistema de sentence-transformers; el proyecto detecta cuál está instalado.
+#   pip install sentence-transformers==3.4.1
 
 # --- LLM (DeepSeek vía interfaz compatible con OpenAI) ---
 langchain-core==1.5.3
