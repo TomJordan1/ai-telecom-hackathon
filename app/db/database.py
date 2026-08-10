@@ -3,9 +3,23 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 
-engine = create_engine(
-    settings.DATABASE_URL, connect_args={"check_same_thread": False}
-)
+# `check_same_thread` es exclusivo de SQLite: pasárselo a psycopg2 lanza
+# excepción al crear el engine. Se detecta el motor desde la URL para que el
+# mismo código sirva con SQLite en local y con Postgres (Supabase) en producción.
+ES_SQLITE = settings.DATABASE_URL.startswith("sqlite")
+
+if ES_SQLITE:
+    engine = create_engine(
+        settings.DATABASE_URL, connect_args={"check_same_thread": False}
+    )
+else:
+    # pool_pre_ping evita usar conexiones que el pooler de Supabase ya cerró
+    # por inactividad, algo habitual en instancias que se duermen (Render free).
+    engine = create_engine(
+        settings.DATABASE_URL,
+        pool_pre_ping=True,
+        pool_recycle=300,
+    )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
@@ -20,26 +34,38 @@ def get_db():
 
 def run_lightweight_migrations():
     """
-    Migración mínima e idempotente para columnas nuevas en bases de datos SQLite
-    ya existentes (create_all no altera tablas ya creadas).
+    Migración mínima e idempotente para columnas nuevas en bases de datos ya
+    existentes (create_all no altera tablas ya creadas).
+
+    Funciona tanto en SQLite como en Postgres. La sintaxis de los DEFAULT difiere
+    entre motores: SQLite acepta 0 como booleano y un literal de texto para JSON,
+    Postgres exige FALSE y un cast explícito.
     """
+    # Literales de DEFAULT dependientes del motor.
+    default_json = "'[]'" if ES_SQLITE else "'[]'::json"
+    default_false = "0" if ES_SQLITE else "FALSE"
+
     inspector = inspect(engine)
     if "historial_interacciones" not in inspector.get_table_names():
         return
 
+    def _agregar_columna(tabla: str, columna: str, definicion: str):
+        """Agrega la columna solo si falta. No interrumpe el arranque si falla."""
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {tabla} ADD COLUMN {columna} {definicion}"))
+        except Exception as e:
+            print(f"[MIGRACION] No se pudo agregar {tabla}.{columna}: {e}")
+
     columnas = {c["name"] for c in inspector.get_columns("historial_interacciones")}
     if "historial_conversacion" not in columnas:
-        with engine.begin() as conn:
-            conn.execute(text(
-                "ALTER TABLE historial_interacciones "
-                "ADD COLUMN historial_conversacion JSON DEFAULT '[]'"
-            ))
+        _agregar_columna(
+            "historial_interacciones", "historial_conversacion", f"JSON DEFAULT {default_json}"
+        )
 
     if "audit_log" in inspector.get_table_names():
         columnas_audit = {c["name"] for c in inspector.get_columns("audit_log")}
         if "handoff_context" not in columnas_audit:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE audit_log ADD COLUMN handoff_context JSON"))
+            _agregar_columna("audit_log", "handoff_context", "JSON")
         if "atendido" not in columnas_audit:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE audit_log ADD COLUMN atendido BOOLEAN DEFAULT 0"))
+            _agregar_columna("audit_log", "atendido", f"BOOLEAN DEFAULT {default_false}")

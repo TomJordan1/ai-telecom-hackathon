@@ -12,6 +12,7 @@
 - [Requisitos previos](#requisitos-previos)
 - [Instalación](#instalación)
 - [Configuración (variables de entorno)](#configuración-variables-de-entorno)
+- [Configuración del RAG (Supabase + pgvector)](#configuración-del-rag-supabase--pgvector)
 - [Datos de prueba (mock)](#datos-de-prueba-mock)
 - [Ejecución](#ejecución)
 - [Uso de la API](#uso-de-la-api)
@@ -93,14 +94,14 @@ Esta separación permite sustituir componentes específicos (por ejemplo, el pro
 |---|---|
 | API / Core | FastAPI + Uvicorn |
 | Validación y configuración | Pydantic v2 + pydantic-settings |
-| Base de datos | SQLite vía SQLAlchemy 2.0 |
+| Base de datos operacional | SQLite vía SQLAlchemy 2.0 |
+| Base vectorial (RAG) | Supabase (PostgreSQL + `pgvector`, índice HNSW) |
+| Embeddings | `all-MiniLM-L6-v2` local vía `fastembed` (384 dims, default) u OpenAI `text-embedding-3-small` (1536 dims) |
 | Orquestación LLM | LangChain (`langchain-core`, `langchain-openai`) |
 | LLM | DeepSeek Chat (interfaz compatible con OpenAI) |
 | Mensajería saliente | WhatsApp Cloud API, Telegram Bot API (HTTP directo) |
 | Bot de Telegram | `python-telegram-bot` (polling) |
 | Frontend | HTML/CSS/JS estático, servido por FastAPI |
-
-> Nota: el diseño original (`plan.md`) contempla una capa RAG con ChromaDB + Sentence Transformers. En el estado actual del código, `app/services/rag.py` es un stub de contexto fijo — ver [Limitaciones conocidas](#limitaciones-conocidas).
 
 ## Estructura del proyecto
 
@@ -125,7 +126,8 @@ ai-telecom-hackathon/
 │   │   ├── intent_classifier.py    # Enrutamiento de intención
 │   │   ├── llm.py                  # Generación con DeepSeek / mock
 │   │   ├── persona.py              # Personalidad y registro lingüístico
-│   │   ├── rag.py                  # Recuperación de contexto (stub)
+│   │   ├── rag.py                  # Recuperación semántica en Supabase (pgvector)
+│   │   ├── embeddings.py           # Proveedor único de embeddings (openai / local)
 │   │   ├── case_matcher.py         # Coincidencia con base de casos
 │   │   ├── feedback_handler.py     # Ciclo cuarentena → base de casos
 │   │   ├── uncertainty_calculator.py # Índice de incertidumbre
@@ -135,6 +137,8 @@ ai-telecom-hackathon/
 │   └── static/                     # Frontend web (chat + panel admin)
 ├── scripts/
 │   ├── generate_mock_data.py       # Seed de datos de prueba
+│   ├── setup_supabase.sql          # Esquema pgvector + función RPC de búsqueda
+│   ├── ingest_supabase.py          # Ingesta de políticas al índice vectorial
 │   └── telegram_bot.py             # Bot de Telegram (proceso aparte)
 ├── plan.md / plan.html             # Especificación arquitectónica original
 ├── requirements.txt                # Dependencias de Python
@@ -197,9 +201,93 @@ El archivo `.env` (basado en `.env.example`) controla todo el comportamiento con
 | `WHATSAPP_TOKEN` | Token temporal de la app de WhatsApp en Meta for Developers. | — |
 | `WHATSAPP_PHONE_ID` | ID del número de teléfono configurado en Meta for Developers. | — |
 | `WHATSAPP_VERIFY_TOKEN` | Token que tú defines para validar el webhook de WhatsApp. Debe coincidir con el configurado en Meta. | `lucia_hackathon_secret` |
+| `WHATSAPP_API_VERSION` | Versión de la Graph API usada al enviar. Meta retira las antiguas; cópiala del panel de API Setup. | `v26.0` |
 | `TELEGRAM_TOKEN` | Token del bot de Telegram, obtenido de `@BotFather`. | — |
+| `SUPABASE_URL` | URL del proyecto de Supabase (Project Settings > API). | — |
+| `SUPABASE_KEY` | Clave de API de Supabase. Se recomienda la `service_role` (solo backend). | — |
+| `USE_MOCK_RAG` | Si es `True`, el RAG devuelve contexto simulado sin consultar Supabase. | `True` |
+| `EMBEDDING_PROVIDER` | `local` (384 dims, sin API ni costo) u `openai` (1536 dims). | `local` |
+| `EMBEDDING_MODEL` | Modelo de embeddings. Vacío = por defecto del proveedor. | — |
+| `OPENAI_API_KEY` | Clave de OpenAI, **solo si** `EMBEDDING_PROVIDER=openai`. No se puede usar la de DeepSeek: su API no tiene endpoint de embeddings. | — |
+| `RAG_MATCH_THRESHOLD` | Similitud mínima (0–1) para aceptar un chunk recuperado. | `0.5` |
+| `RAG_MATCH_COUNT` | Cantidad de chunks a recuperar (top-k). | `3` |
 
-> Sin `DEEPSEEK_API_KEY` configurada (o con `USE_MOCK_LLM=True`), el sistema sigue siendo completamente funcional: usa un generador de respuestas simulado que interpola los mismos datos deterministas verificados, sin llamar a ningún modelo externo.
+> Sin `DEEPSEEK_API_KEY` configurada (o con `USE_MOCK_LLM=True`), el sistema sigue siendo completamente funcional: usa un generador de respuestas simulado que interpola los mismos datos deterministas verificados, sin llamar a ningún modelo externo. Lo mismo aplica al RAG con `USE_MOCK_RAG=True`.
+
+## Configuración del RAG (Supabase + pgvector)
+
+La capa de conocimiento cualitativo (políticas de facturación) vive en Supabase, usando la extensión nativa `pgvector` con un índice HNSW y búsqueda por similitud de coseno. Es opcional: con `USE_MOCK_RAG=True` el sistema funciona sin ella.
+
+### 1. Crear el esquema
+
+En tu proyecto de Supabase, abre **SQL Editor > New query**, pega el contenido de [`scripts/setup_supabase.sql`](./scripts/setup_supabase.sql) y ejecútalo. Eso crea:
+
+- La tabla `documentos_politicas` (contenido, categoría, fuente, embedding, metadata).
+- El índice HNSW sobre la columna `embedding` para búsqueda por coseno.
+- La función RPC `match_documentos(query_embedding, match_threshold, match_count, filter_categoria)`.
+- Row Level Security habilitada, de modo que la clave `anon` no pueda leer la tabla.
+
+### 2. Configurar credenciales
+
+En tu `.env`:
+
+```env
+SUPABASE_URL=https://tu-proyecto.supabase.co
+SUPABASE_KEY=tu-service-role-key
+USE_MOCK_RAG=False
+EMBEDDING_PROVIDER=local
+EMBEDDING_MODEL=all-MiniLM-L6-v2
+```
+
+No hace falta ninguna API key de embeddings: el proveedor `local` ejecuta `all-MiniLM-L6-v2` con `fastembed` (runtime ONNX, ~80 MB, ya incluido en `requirements.txt`). El modelo se descarga solo en la primera ejecución y queda cacheado.
+
+> **Sobre DeepSeek**: `DEEPSEEK_API_KEY` sirve para la generación de texto, no para embeddings. La API de DeepSeek expone únicamente chat completions, así que no puede vectorizar documentos. Si quieres embeddings por API en lugar de locales, necesitas una key de OpenAI y `EMBEDDING_PROVIDER=openai`.
+
+> **Importante sobre las dimensiones**: el script SQL declara `VECTOR(384)`, que corresponde a `all-MiniLM-L6-v2`. Si cambias a `EMBEDDING_PROVIDER=openai` (1536 dims), debes cambiar `384` por `1536` en los dos lugares donde aparece en el SQL, y recrear la tabla (`DROP TABLE documentos_politicas CASCADE;`) porque una columna `VECTOR` no se puede redimensionar. Si la dimensión de la tabla y la del modelo no coinciden, la inserción falla.
+
+> **Importante sobre las claves**: la `service_role` key omite RLS y da acceso total al proyecto. Úsala solo en el backend, nunca en el frontend, y no la subas al repositorio (`.env` está en `.gitignore`).
+
+### 3. Ingestar el corpus de políticas
+
+```powershell
+python scripts/ingest_supabase.py
+```
+
+Opciones disponibles:
+
+| Comando | Efecto |
+|---|---|
+| `python scripts/ingest_supabase.py` | Vectoriza el corpus e inserta los chunks. |
+| `python scripts/ingest_supabase.py --reset` | Borra primero los chunks de la misma fuente y reingesta (idempotente). |
+| `python scripts/ingest_supabase.py --dry-run` | Genera y valida los embeddings sin escribir en Supabase. |
+
+El corpus cubre las políticas de los 5 escenarios del reto (prorrateo, fin de promoción, cuotas de equipo, reconexión por morosidad y cambio de plan) más políticas generales de transparencia. Las categorías están alineadas con los `detected_event` del motor determinista, de modo que se puede filtrar la búsqueda por el evento ya detectado.
+
+Para verificar la ingesta, ejecuta en el SQL Editor de Supabase:
+
+```sql
+SELECT categoria, COUNT(*) AS chunks
+FROM documentos_politicas
+GROUP BY categoria
+ORDER BY categoria;
+```
+
+### Comportamiento ante fallos
+
+`retrieve_context()` nunca lanza una excepción ni bloquea `POST /chat`. Si Supabase no responde, faltan credenciales, la librería no está instalada o ninguna coincidencia supera el umbral, el retriever degrada a un bloque de políticas generales de transparencia y la conversación continúa con normalidad. El motivo del fallback queda registrado en los logs con el prefijo `[RAG]`.
+
+Además, el contexto recuperado se inyecta en el prompt marcado explícitamente como material de referencia conceptual, no como fuente de cifras: los montos y fechas siguen viniendo exclusivamente del motor determinista.
+
+### Cambiar a embeddings de OpenAI (opcional)
+
+El proveedor `local` es el default y no requiere API key. Si prefieres los embeddings de OpenAI:
+
+1. En `scripts/setup_supabase.sql`, cambia `VECTOR(384)` por `VECTOR(1536)` en los **dos** sitios: la columna `embedding` y el parámetro `query_embedding` de la función.
+2. Recrea la tabla, porque una columna `VECTOR` no se puede redimensionar: `DROP TABLE documentos_politicas CASCADE;` y vuelve a ejecutar el script completo.
+3. En `.env`: `EMBEDDING_PROVIDER=openai`, `EMBEDDING_MODEL=text-embedding-3-small` y `OPENAI_API_KEY=sk-...`.
+4. Reingesta: `python scripts/ingest_supabase.py --reset`.
+
+El backend de embeddings se elige solo: si `fastembed` está instalado lo usa, y si no cae a `sentence-transformers`. Ambos ejecutan el mismo modelo `all-MiniLM-L6-v2`, así que los vectores son compatibles entre backends.
 
 ## Datos de prueba (mock)
 
@@ -344,7 +432,8 @@ Para forzar la derivación a un agente humano, escribe algo como *"quiero hablar
 
 ## Limitaciones conocidas
 
-- **RAG no implementado**: `app/services/rag.py` retorna actualmente un contexto de texto fijo. El diseño original (`plan.md`) contempla ChromaDB + `all-MiniLM-L6-v2`, pendiente de implementación.
+- **RAG con corpus acotado**: la recuperación semántica ya es real (Supabase + `pgvector`), pero el corpus indexado son las políticas base incluidas en `scripts/ingest_supabase.py`. Para un caso de uso productivo habría que ingestar los manuales de políticas completos y evaluar el umbral de similitud con datos reales. El diseño original planteaba ChromaDB local; se optó por Supabase para tener búsqueda vectorial gestionada y persistente.
+- **Sin partición del contexto por categoría en el orquestador**: el retriever soporta filtrar por categoría de política, pero el orquestador consulta hoy todas las categorías para no perder recall.
 - **Sin autenticación**: ningún endpoint de la API (incluidos los de administración) requiere autenticación. No usar en un entorno expuesto públicamente sin agregar esta capa.
 - **`user_id` fijo en canales externos**: los webhooks de WhatsApp y el bot de Telegram asocian todos los mensajes entrantes a un único usuario mock, ya que no existe todavía un mapeo real de identidad por canal.
 - **Alertas y seguimientos manuales**: no hay un scheduler/cron real; tanto las alertas proactivas como los mensajes de seguimiento de casos se disparan manualmente vía endpoint, pensado para mantener la demo controlable.

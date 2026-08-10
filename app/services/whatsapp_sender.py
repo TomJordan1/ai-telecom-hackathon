@@ -3,13 +3,24 @@ import time
 from app.core.config import settings
 from app.core.schemas import ChatResponse
 
+def _endpoint_mensajes() -> str:
+    """
+    URL del endpoint de envío. La versión de la Graph API es configurable porque
+    Meta retira las versiones antiguas y una versión deprecada devuelve error.
+    """
+    return (
+        f"https://graph.facebook.com/{settings.WHATSAPP_API_VERSION}"
+        f"/{settings.WHATSAPP_PHONE_ID}/messages"
+    )
+
+
 def send_whatsapp_text(to_number: str, text: str):
     """Envía un mensaje de texto simple vía WhatsApp Cloud API."""
     if not settings.WHATSAPP_TOKEN or not settings.WHATSAPP_PHONE_ID:
         print(f"[MOCK WA] A {to_number}: {text}")
         return
 
-    url = f"https://graph.facebook.com/v17.0/{settings.WHATSAPP_PHONE_ID}/messages"
+    url = _endpoint_mensajes()
     headers = {
         "Authorization": f"Bearer {settings.WHATSAPP_TOKEN}",
         "Content-Type": "application/json"
@@ -37,7 +48,7 @@ def send_whatsapp_interactive(to_number: str, text: str, buttons: list):
         print(f"[MOCK WA] A {to_number}: {text} [Botones: {buttons}]")
         return
 
-    url = f"https://graph.facebook.com/v17.0/{settings.WHATSAPP_PHONE_ID}/messages"
+    url = _endpoint_mensajes()
     headers = {
         "Authorization": f"Bearer {settings.WHATSAPP_TOKEN}",
         "Content-Type": "application/json"

@@ -10,8 +10,9 @@ from app.db.database import engine, Base, SessionLocal
 from app.db.models import ReciboCliente, HistorialInteracciones, CatalogoPlanes, TerminosRestringidos, ContactoUsuario
 
 def init_db():
-    # Create tables
-    print("Creando tablas en SQLite...")
+    # Create tables (funciona igual con SQLite o con Postgres/Supabase,
+    # según lo que apunte DATABASE_URL)
+    print(f"Creando tablas en {engine.dialect.name}...")
     Base.metadata.create_all(bind=engine)
     
     db = SessionLocal()
@@ -90,7 +91,7 @@ def init_db():
     db.add_all(contactos)
 
     db.commit()
-    print("Datos de prueba (Mocks) insertados exitosamente en SQLite.")
+    print(f"Datos de prueba (Mocks) insertados exitosamente en {engine.dialect.name}.")
     db.close()
 
 if __name__ == "__main__":

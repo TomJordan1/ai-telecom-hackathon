@@ -1,4 +1,10 @@
-.env__pycache__/
-*.pyc
-.env
+__pycache__/
 *__pycache__/*
+*.pyc
+
+# Variables de entorno (nunca subir credenciales)
+.env
+
+# Entornos virtuales
+venv/
+.venv/
