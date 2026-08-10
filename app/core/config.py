@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     WHATSAPP_TOKEN: str | None = None
     WHATSAPP_PHONE_ID: str | None = None
     WHATSAPP_VERIFY_TOKEN: str = "lucia_hackathon_secret"
+    # App Secret de Meta (App Settings > Basic). Habilita la verificación de la
+    # firma X-Hub-Signature-256 de los eventos entrantes. Si queda sin definir,
+    # el webhook sigue aceptando eventos pero lo advierte en el log.
+    WHATSAPP_APP_SECRET: str | None = None
     # Versión de la Graph API. Meta retira las versiones antiguas (v17.0 ya está
     # deprecada), así que se deja configurable: copia la que muestre el panel
     # de Meta for Developers > WhatsApp > API Setup en su ejemplo de curl.
