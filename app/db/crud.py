@@ -1,3 +1,5 @@
+import re
+
 from sqlalchemy.orm import Session
 from app.db import models
 
@@ -16,6 +18,52 @@ def get_all_user_ids(db: Session):
 
 def get_contacto_usuario(db: Session, user_id: str):
     return db.query(models.ContactoUsuario).filter(models.ContactoUsuario.user_id == user_id).first()
+
+
+def _solo_digitos(valor: str) -> str:
+    return re.sub(r"\D", "", valor or "")
+
+
+def get_user_id_por_whatsapp(db: Session, numero: str):
+    """
+    Resuelve el user_id a partir del número de WhatsApp entrante.
+
+    Es la búsqueda inversa de get_contacto_usuario: el webhook recibe un número
+    y necesita saber de qué cliente se trata, o todos los mensajes terminarían
+    atendidos como el mismo usuario.
+
+    La comparación se hace sobre dígitos, porque Meta envía el número sin '+' y
+    los registros pueden tener formatos distintos. Si no hay coincidencia exacta
+    se intenta por los últimos 9 dígitos, que tolera diferencias de prefijo país.
+    """
+    digitos = _solo_digitos(numero)
+    if not digitos:
+        return None
+
+    contactos = db.query(models.ContactoUsuario).filter(
+        models.ContactoUsuario.whatsapp_number.isnot(None)
+    ).all()
+
+    for contacto in contactos:
+        if _solo_digitos(contacto.whatsapp_number) == digitos:
+            return contacto.user_id
+
+    for contacto in contactos:
+        registrado = _solo_digitos(contacto.whatsapp_number)
+        if len(registrado) >= 9 and len(digitos) >= 9 and registrado[-9:] == digitos[-9:]:
+            return contacto.user_id
+
+    return None
+
+
+def get_user_id_por_telegram(db: Session, chat_id: str):
+    """Equivalente para Telegram: resuelve el user_id desde el chat_id."""
+    if not chat_id:
+        return None
+    contacto = db.query(models.ContactoUsuario).filter(
+        models.ContactoUsuario.telegram_chat_id == str(chat_id)
+    ).first()
+    return contacto.user_id if contacto else None
 
 
 def upsert_contacto_usuario(db: Session, user_id: str, whatsapp_number: str = None, telegram_chat_id: str = None):

@@ -339,6 +339,12 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
 
     # Adjuntar el confidence_score (inverso de incertidumbre)
     response.confidence_score = int((1 - uncertainty_score) * 100)
+
+    # La clasificación del turno es un hecho determinista, no una opinión del
+    # modelo: si se deja la que devuelve el LLM aparecen etiquetas inventadas
+    # ("consulta_cargo", "BILL_VARIATION_EXPLANATION"), que rompen el contrato de
+    # la API y ensucian el audit_log. Se fuerza el evento detectado.
+    response.intent_category = fact_payload.get("detected_event") or "CONSULTA_GENERAL"
     if response.personality_metadata and not response.personality_metadata.hook_used:
         response.personality_metadata.hook_used = _hook_used(response)
 

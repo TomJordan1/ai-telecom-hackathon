@@ -1,12 +1,45 @@
+import hashlib
+import hmac
+import json
+
 from fastapi import APIRouter, Request, Response, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.core.config import settings
+from app.db import crud
 from app.db.database import get_db
 from app.services.orchestrator import process_message
 from app.core.schemas import ChatRequest
 from app.services.whatsapp_sender import process_and_send_whatsapp
 
 router = APIRouter()
+
+# Usuario de respaldo cuando el número entrante no está registrado en
+# contactos_usuario. Permite que un jurado escriba desde cualquier celular y
+# vea una demo coherente en lugar de un error.
+USER_ID_FALLBACK = "user_a_fin_promo"
+
+
+def _firma_valida(cuerpo: bytes, firma_header: str | None) -> bool:
+    """
+    Verifica el header X-Hub-Signature-256 que Meta firma con el App Secret.
+    Sin esta validación, cualquiera que conozca la URL pública del webhook puede
+    inyectar eventos falsos y hacer que Lucía escriba a los destinatarios.
+
+    Si WHATSAPP_APP_SECRET no está configurado, no se bloquea (para no romper un
+    entorno de demo ya funcionando), pero se avisa en el log.
+    """
+    if not settings.WHATSAPP_APP_SECRET:
+        print("[WA WEBHOOK] AVISO: WHATSAPP_APP_SECRET no configurado, "
+              "se acepta el evento sin verificar la firma de Meta.")
+        return True
+
+    if not firma_header or not firma_header.startswith("sha256="):
+        return False
+
+    esperada = hmac.new(
+        settings.WHATSAPP_APP_SECRET.encode("utf-8"), cuerpo, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(esperada, firma_header.split("=", 1)[1])
 
 @router.get("/webhook/whatsapp")
 async def verify_webhook(request: Request):
@@ -31,7 +64,14 @@ async def receive_whatsapp_message(request: Request, background_tasks: Backgroun
     y programa el envío de las respuestas en segundo plano para no bloquear a Meta.
     """
     try:
-        body = await request.json()
+        # Se lee el cuerpo crudo porque la firma se calcula sobre los bytes
+        # exactos que envió Meta; re-serializar el JSON la invalidaría.
+        cuerpo = await request.body()
+        if not _firma_valida(cuerpo, request.headers.get("X-Hub-Signature-256")):
+            print("[WA WEBHOOK] Firma inválida: evento descartado.")
+            return Response(content="INVALID_SIGNATURE", status_code=403)
+
+        body = json.loads(cuerpo)
         print(f"[WA WEBHOOK] Body recibido: {body}")
         
         # Parsear el JSON crudo que envía Meta
@@ -62,11 +102,20 @@ async def receive_whatsapp_message(request: Request, background_tasks: Backgroun
                                 
                         if user_text:
                             print(f"[WA WEBHOOK] Texto extraido: '{user_text}' -> procesando...")
-                            mock_user_id = "user_a_fin_promo"
-                            
+
+                            # El número entrante se resuelve contra contactos_usuario:
+                            # cada cliente ve sus propios recibos, no los de un mock fijo.
+                            user_id = crud.get_user_id_por_whatsapp(db, phone_number)
+                            if user_id:
+                                print(f"[WA WEBHOOK] Numero {phone_number} -> user_id={user_id}")
+                            else:
+                                user_id = USER_ID_FALLBACK
+                                print(f"[WA WEBHOOK] Numero {phone_number} no registrado en "
+                                      f"contactos_usuario, se usa fallback user_id={user_id}")
+
                             chat_request = ChatRequest(
                                 session_id=f"wa_{phone_number}",
-                                user_id=mock_user_id,
+                                user_id=user_id,
                                 message=user_text,
                                 channel="whatsapp"
                             )
