@@ -40,30 +40,59 @@ def init_db():
     ]
     db.add_all(terminos)
 
-    # 3. Poblar Recibos Cliente (Mock Data para 3 usuarios representativos)
-    
-    # Usuario A: Escenario de Fin de Promoción
-    # El mes actual (2026-08) subió a 119.90, el mes pasado (2026-07) era 99.90
+    # 3. Poblar Recibos Cliente (Mock Data para 5 usuarios representativos)
+    #
+    # Cada usuario tiene 6 recibos (mes actual + 5 previos, marzo a agosto 2026),
+    # el mismo horizonte que muestra la App Mi Movistar según el brief del reto.
+    # Esto permite comparar contra el mes inmediato anterior (causa puntual) y
+    # también detectar patrones a lo largo de los 5 meses (ver
+    # deterministic._detectar_patron_recurrente).
+
+    # Usuario A: Escenario de Fin de Promoción, CON RECURRENCIA
+    # La promo se activó, venció (mes 05), se reactivó, y vuelve a vencer ahora
+    # (mes 08, el actual). Esto demuestra la detección de patrón recurrente:
+    # "esto ya pasó 2 veces en los últimos 5 meses", no solo la causa puntual.
+    db.add(ReciboCliente(user_id="user_a_fin_promo", mes_emision="2026-03", monto_total=99.90, fecha_emision=datetime(2026, 3, 1), conceptos_facturados={"cargo_fijo": 119.90, "descuento_promo": -20.00}, plan_actual="Internet Hogar 300 Mbps"))
+    db.add(ReciboCliente(user_id="user_a_fin_promo", mes_emision="2026-04", monto_total=99.90, fecha_emision=datetime(2026, 4, 1), conceptos_facturados={"cargo_fijo": 119.90, "descuento_promo": -20.00}, plan_actual="Internet Hogar 300 Mbps"))
+    db.add(ReciboCliente(user_id="user_a_fin_promo", mes_emision="2026-05", monto_total=119.90, fecha_emision=datetime(2026, 5, 1), conceptos_facturados={"cargo_fijo": 119.90}, plan_actual="Internet Hogar 300 Mbps"))
+    db.add(ReciboCliente(user_id="user_a_fin_promo", mes_emision="2026-06", monto_total=99.90, fecha_emision=datetime(2026, 6, 1), conceptos_facturados={"cargo_fijo": 119.90, "descuento_promo": -20.00}, plan_actual="Internet Hogar 300 Mbps"))
     db.add(ReciboCliente(user_id="user_a_fin_promo", mes_emision="2026-07", monto_total=99.90, fecha_emision=datetime(2026, 7, 1), conceptos_facturados={"cargo_fijo": 119.90, "descuento_promo": -20.00}, plan_actual="Internet Hogar 300 Mbps"))
     db.add(ReciboCliente(user_id="user_a_fin_promo", mes_emision="2026-08", monto_total=119.90, fecha_emision=datetime(2026, 8, 1), conceptos_facturados={"cargo_fijo": 119.90}, plan_actual="Internet Hogar 300 Mbps"))
-    
+
     # Usuario B: Escenario de Prorrateo por Cambio de Plan
-    # En 2026-07 pagaba 69.90 (100Mbps). A mitad de mes cambió a 300Mbps (99.90).
+    # Estuvo 5 meses estable en el plan de 100 Mbps y a mitad de agosto cambió a 300 Mbps.
+    db.add(ReciboCliente(user_id="user_b_prorrateo", mes_emision="2026-03", monto_total=69.90, fecha_emision=datetime(2026, 3, 1), conceptos_facturados={"cargo_fijo": 69.90}, plan_actual="Internet Hogar 100 Mbps"))
+    db.add(ReciboCliente(user_id="user_b_prorrateo", mes_emision="2026-04", monto_total=69.90, fecha_emision=datetime(2026, 4, 1), conceptos_facturados={"cargo_fijo": 69.90}, plan_actual="Internet Hogar 100 Mbps"))
+    db.add(ReciboCliente(user_id="user_b_prorrateo", mes_emision="2026-05", monto_total=69.90, fecha_emision=datetime(2026, 5, 1), conceptos_facturados={"cargo_fijo": 69.90}, plan_actual="Internet Hogar 100 Mbps"))
+    db.add(ReciboCliente(user_id="user_b_prorrateo", mes_emision="2026-06", monto_total=69.90, fecha_emision=datetime(2026, 6, 1), conceptos_facturados={"cargo_fijo": 69.90}, plan_actual="Internet Hogar 100 Mbps"))
     db.add(ReciboCliente(user_id="user_b_prorrateo", mes_emision="2026-07", monto_total=69.90, fecha_emision=datetime(2026, 7, 1), conceptos_facturados={"cargo_fijo": 69.90}, plan_actual="Internet Hogar 100 Mbps"))
     db.add(ReciboCliente(user_id="user_b_prorrateo", mes_emision="2026-08", monto_total=84.90, fecha_emision=datetime(2026, 8, 1), conceptos_facturados={"cargo_fijo_100M_15dias": 34.95, "cargo_fijo_300M_15dias": 49.95}, plan_actual="Internet Hogar 300 Mbps"))
 
     # Usuario C: Escenario Cuota de Equipo
-    # Compró un repetidor de 120 soles financiado en 6 cuotas de 20 soles.
+    # Estuvo 5 meses sin equipo financiado; en agosto compró un repetidor financiado en 6 cuotas.
+    db.add(ReciboCliente(user_id="user_c_equipo", mes_emision="2026-03", monto_total=99.90, fecha_emision=datetime(2026, 3, 1), conceptos_facturados={"cargo_fijo": 99.90}, plan_actual="Internet Hogar 300 Mbps"))
+    db.add(ReciboCliente(user_id="user_c_equipo", mes_emision="2026-04", monto_total=99.90, fecha_emision=datetime(2026, 4, 1), conceptos_facturados={"cargo_fijo": 99.90}, plan_actual="Internet Hogar 300 Mbps"))
+    db.add(ReciboCliente(user_id="user_c_equipo", mes_emision="2026-05", monto_total=99.90, fecha_emision=datetime(2026, 5, 1), conceptos_facturados={"cargo_fijo": 99.90}, plan_actual="Internet Hogar 300 Mbps"))
+    db.add(ReciboCliente(user_id="user_c_equipo", mes_emision="2026-06", monto_total=99.90, fecha_emision=datetime(2026, 6, 1), conceptos_facturados={"cargo_fijo": 99.90}, plan_actual="Internet Hogar 300 Mbps"))
     db.add(ReciboCliente(user_id="user_c_equipo", mes_emision="2026-07", monto_total=99.90, fecha_emision=datetime(2026, 7, 1), conceptos_facturados={"cargo_fijo": 99.90}, plan_actual="Internet Hogar 300 Mbps"))
     db.add(ReciboCliente(user_id="user_c_equipo", mes_emision="2026-08", monto_total=119.90, fecha_emision=datetime(2026, 8, 1), conceptos_facturados={"cargo_fijo": 99.90, "cuota_equipo_1_de_6": 20.00}, plan_actual="Internet Hogar 300 Mbps"))
 
     # Usuario D: Escenario de Reconexión por Suspensión Morosa
-    # El servicio fue suspendido por falta de pago; al reconectar se aplica un cargo fijo de reconexión.
+    # Servicio normal por 5 meses; en agosto se suspendió por mora y se reconectó con cargo.
+    db.add(ReciboCliente(user_id="user_d_reconexion", mes_emision="2026-03", monto_total=69.90, fecha_emision=datetime(2026, 3, 1), conceptos_facturados={"cargo_fijo": 69.90}, plan_actual="Internet Hogar 100 Mbps"))
+    db.add(ReciboCliente(user_id="user_d_reconexion", mes_emision="2026-04", monto_total=69.90, fecha_emision=datetime(2026, 4, 1), conceptos_facturados={"cargo_fijo": 69.90}, plan_actual="Internet Hogar 100 Mbps"))
+    db.add(ReciboCliente(user_id="user_d_reconexion", mes_emision="2026-05", monto_total=69.90, fecha_emision=datetime(2026, 5, 1), conceptos_facturados={"cargo_fijo": 69.90}, plan_actual="Internet Hogar 100 Mbps"))
+    db.add(ReciboCliente(user_id="user_d_reconexion", mes_emision="2026-06", monto_total=69.90, fecha_emision=datetime(2026, 6, 1), conceptos_facturados={"cargo_fijo": 69.90}, plan_actual="Internet Hogar 100 Mbps"))
     db.add(ReciboCliente(user_id="user_d_reconexion", mes_emision="2026-07", monto_total=69.90, fecha_emision=datetime(2026, 7, 1), conceptos_facturados={"cargo_fijo": 69.90}, plan_actual="Internet Hogar 100 Mbps"))
     db.add(ReciboCliente(user_id="user_d_reconexion", mes_emision="2026-08", monto_total=99.90, fecha_emision=datetime(2026, 8, 1), conceptos_facturados={"cargo_fijo": 69.90, "cargo_reconexion": 30.00}, plan_actual="Internet Hogar 100 Mbps"))
 
     # Usuario E: Escenario de Alerta Proactiva (promo activa a punto de vencer)
-    # Sirve para demostrar 'upcoming_alerts': la promo termina en 5 días desde la fecha del recibo actual.
+    # 5 meses estables con el descuento activo; en el recibo actual no hay variación
+    # todavía, pero la promo vence en 5 días (demuestra 'upcoming_alerts').
+    db.add(ReciboCliente(user_id="user_e_alerta_proactiva", mes_emision="2026-03", monto_total=79.90, fecha_emision=datetime(2026, 3, 1), conceptos_facturados={"cargo_fijo": 99.90, "descuento_promo": -20.00}, plan_actual="Internet Hogar 300 Mbps"))
+    db.add(ReciboCliente(user_id="user_e_alerta_proactiva", mes_emision="2026-04", monto_total=79.90, fecha_emision=datetime(2026, 4, 1), conceptos_facturados={"cargo_fijo": 99.90, "descuento_promo": -20.00}, plan_actual="Internet Hogar 300 Mbps"))
+    db.add(ReciboCliente(user_id="user_e_alerta_proactiva", mes_emision="2026-05", monto_total=79.90, fecha_emision=datetime(2026, 5, 1), conceptos_facturados={"cargo_fijo": 99.90, "descuento_promo": -20.00}, plan_actual="Internet Hogar 300 Mbps"))
+    db.add(ReciboCliente(user_id="user_e_alerta_proactiva", mes_emision="2026-06", monto_total=79.90, fecha_emision=datetime(2026, 6, 1), conceptos_facturados={"cargo_fijo": 99.90, "descuento_promo": -20.00}, plan_actual="Internet Hogar 300 Mbps"))
     db.add(ReciboCliente(user_id="user_e_alerta_proactiva", mes_emision="2026-07", monto_total=79.90, fecha_emision=datetime(2026, 7, 1), conceptos_facturados={"cargo_fijo": 99.90, "descuento_promo": -20.00}, plan_actual="Internet Hogar 300 Mbps"))
     db.add(ReciboCliente(
         user_id="user_e_alerta_proactiva", mes_emision="2026-08", monto_total=79.90, fecha_emision=datetime(2026, 8, 1),

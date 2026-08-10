@@ -33,6 +33,23 @@ function addMessage(text, sender, type = 'normal') {
     messageDiv.appendChild(bubble);
     messagesContainer.appendChild(messageDiv);
     scrollToBottom();
+    return messageDiv;
+}
+
+// Indicador visible del ciclo de aprendizaje: si un caso ya fue validado por
+// feedback/un asesor, la respuesta se resuelve con conocimiento reutilizado en
+// vez de generarse desde cero, y la confianza sube. Esto hace visible en la UI
+// la diferencia entre "caso nuevo" y "caso ya aprendido", que es el
+// diferenciador del producto, no solo un detalle interno del backend.
+function addConfidenceBadge(afterMessageDiv, confidenceScore, casoValidado) {
+    const badge = document.createElement('div');
+    badge.classList.add('confidence-badge');
+    badge.classList.add(casoValidado ? 'validated' : 'learning');
+    badge.innerHTML = casoValidado
+        ? `✓ Caso validado · confianza ${confidenceScore}%`
+        : `◌ Caso nuevo, en aprendizaje · confianza ${confidenceScore}%`;
+    afterMessageDiv.appendChild(badge);
+    scrollToBottom();
 }
 
 function addUpsellCard(suggestion) {
@@ -98,13 +115,24 @@ async function sendMessage() {
         hideTyping();
         
         // Procesar los mensajes en orden con sus delays
+        let ultimoMensajeDiv = null;
         for (const msg of data.messages) {
             if (msg.delay_ms > 0) {
                 showTyping();
                 await sleep(msg.delay_ms);
                 hideTyping();
             }
-            addMessage(msg.text, 'bot', msg.type);
+            ultimoMensajeDiv = addMessage(msg.text, 'bot', msg.type);
+        }
+
+        // El badge de confianza solo aporta en turnos que evaluaron un caso de
+        // facturación (donde hubo un motor determinista + case matcher de por
+        // medio). Turnos conversacionales o bloqueados por compliance no lo muestran.
+        const esFacturacion = !data.compliance_triggered
+            && !['SALUDO', 'DESPEDIDA', 'AGRADECIMIENTO', 'FUERA_DE_DOMINIO', 'SOLICITUD_AGENTE']
+                .includes(data.intent_category);
+        if (esFacturacion && ultimoMensajeDiv) {
+            addConfidenceBadge(ultimoMensajeDiv, data.confidence_score, data.caso_validado);
         }
 
         // Si hay una sugerencia de plan

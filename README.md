@@ -2,7 +2,17 @@
 
 Asistente conversacional que explica variaciones de recibo a clientes de telecomunicaciones. Su objetivo es que cada cambio de monto quede justificado con el concepto facturado concreto que lo produjo, en lugar de respuestas genéricas.
 
-El diseño se apoya en una **separación estricta de responsabilidades**: los montos, fechas, variaciones y reglas de negocio los calcula un motor determinista en Python/SQL, y el modelo de lenguaje solo traduce esa información a lenguaje natural. El LLM nunca calcula ni decide, y una capa de validación posterior corrige su salida si se desvía de los datos verificados.
+## No es un chatbot que responde. Es un sistema que aprende a resolver, y siempre sabe cuándo no sabe.
+
+La mayoría de asistentes de facturación explican igual el día 1 que el día 100: cada consulta se resuelve desde cero, con el mismo esfuerzo del modelo de lenguaje y el mismo nivel de riesgo de que algo salga mal. Lucía está diseñada para lo contrario: **cada caso que un asesor valida hace que el siguiente caso igual se resuelva más rápido, con más certeza y sin volver a depender tanto del LLM.**
+
+Esto se sostiene en tres decisiones de diseño, no en una sola feature:
+
+1. **Confianza calculada, no declarada.** El sistema nunca le pregunta al modelo "¿qué tan seguro estás?". El índice de incertidumbre se construye desde señales objetivas del backend — ¿hay un caso ya validado?, ¿hay datos suficientes?, ¿el evento es reconocible? — y decide con esos números cuándo derivar a un humano en vez de improvisar una respuesta.
+2. **Aprendizaje supervisado, no memorización ciega.** El sistema no cachea texto. Aprende *patrones* de problema → solución. Un caso nuevo pasa por cuarentena; solo se promueve a conocimiento reutilizable cuando el feedback *posterior* (no solo el "👍" del momento) confirma que funcionó, o un asesor humano lo aprueba desde el panel de administración.
+3. **Esto es medible en vivo, no solo una promesa de diapositiva.** La misma consulta, resuelta dos veces: la primera vez sale con confianza 80% (caso nuevo, va a cuarentena); después de que un asesor la valide desde el panel, la segunda consulta idéntica sale con confianza 100% — y la propia interfaz lo muestra con una insignia verde (✓ *Caso validado*) o ámbar (◌ *Caso nuevo, en aprendizaje*). Es la reducción de carga al call center ocurriendo frente a quien prueba el producto, no una cifra proyectada.
+
+El diseño se apoya en una **separación estricta de responsabilidades**: los montos, fechas, variaciones y reglas de negocio los calcula un motor determinista en Python/SQL, y el modelo de lenguaje solo traduce esa información a lenguaje natural. El LLM nunca calcula ni decide, y una capa de validación posterior corrige su salida si se desvía de los datos verificados. Esta separación es lo que hace posible el punto 1: la incertidumbre no depende de que el modelo "se sienta seguro", depende de hechos verificables.
 
 ## Tabla de contenidos
 
@@ -244,7 +254,7 @@ Debe imprimir `conectado a postgresql`. Si falla por autenticación, la contrase
 python scripts/generate_mock_data.py
 ```
 
-Crea las 8 tablas si no existen y siembra cinco clientes con dos recibos cada uno, uno por escenario:
+Crea las 8 tablas si no existen y siembra cinco clientes con seis recibos cada uno (mes actual + 5 previos, el mismo horizonte que muestra la App Mi Movistar según el brief), uno por escenario:
 
 | `user_id` | Escenario |
 |---|---|
@@ -446,7 +456,8 @@ Respuesta abreviada:
   ],
   "upcoming_alerts": [],
   "plan_optimizer_suggestion": { "available": false },
-  "confidence_score": 90,
+  "confidence_score": 80,
+  "caso_validado": false,
   "compliance_triggered": false
 }
 ```
@@ -454,6 +465,8 @@ Respuesta abreviada:
 Los `messages` vienen troceados con un `delay_ms` cada uno, para que el cliente los muestre de forma escalonada en lugar de un bloque único.
 
 `intent_category`, en turnos de facturación, es el evento detectado por el motor determinista (`FIN_PROMOCION`, `PRORRATEO_CAMBIO_PLAN`, `CUOTA_EQUIPO`, `RECONEXION_MOROSIDAD`, `REDUCCION_TARIFA`, `SIN_CAMBIOS`), no una etiqueta generada por el modelo. Es un valor estable sobre el que se puede programar.
+
+`caso_validado` es la señal visible del ciclo de aprendizaje: `true` si la respuesta reutilizó una solución ya aprobada en `base_casos` (el chat web la muestra como una insignia verde), `false` si se generó desde cero porque todavía no hay conocimiento validado para ese patrón (insignia ámbar). `confidence_score` sube de forma medible entre ambos casos — normalmente de 80% a 100% para el mismo tipo de consulta, una vez que un asesor valida el caso desde el panel de administración.
 
 ### Otros endpoints
 
@@ -570,6 +583,8 @@ Para ver las salvaguardas:
 - *"gracias, quedó clarísimo"* → el sentimiento sube, pero la oferta comercial no aparece si el catálogo no tiene un plan que represente una mejora real. Es el blindaje anti-alucinación en acción.
 
 Para la memoria emocional, frases que activan el detector: *"la verdad estoy cansado de que mi recibo suba todos los meses"*, *"siempre pasa lo mismo"*, *"sé que no es tu culpa"*.
+
+Para ver el ciclo de aprendizaje (el diferenciador del producto) en vivo, sigue el guion detallado en [`docs/demo-diferenciador.md`](./docs/demo-diferenciador.md): una consulta nueva sale con insignia ámbar y 80% de confianza, y tras validarla desde el panel, la misma consulta repetida sale con insignia verde y 100%.
 
 ## Limitaciones conocidas
 

@@ -339,6 +339,9 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
 
     # Adjuntar el confidence_score (inverso de incertidumbre)
     response.confidence_score = int((1 - uncertainty_score) * 100)
+    # Señal visible del diferenciador: ¿esta respuesta reutilizó conocimiento ya
+    # validado por un humano/feedback, o se generó desde cero (caso nuevo)?
+    response.caso_validado = caso_match is not None
 
     # La clasificación del turno es un hecho determinista, no una opinión del
     # modelo: si se deja la que devuelve el LLM aparecen etiquetas inventadas
