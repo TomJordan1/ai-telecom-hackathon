@@ -17,6 +17,22 @@ class ContactoUsuario(Base):
     telegram_chat_id = Column(String, nullable=True)
 
 
+class MensajeProcesado(Base):
+    """
+    Registro de idempotencia para los mensajes entrantes de canales externos.
+
+    WhatsApp Cloud API reintenta la entrega del mismo evento cuando el webhook
+    no responde 200 con rapidez (o ante cualquier error de red), y cada reintento
+    llega con el mismo message_id (wamid). Sin este registro, un único "hola" del
+    usuario se procesaba y se respondía varias veces.
+    """
+    __tablename__ = "mensajes_procesados"
+
+    message_id = Column(String, primary_key=True, index=True)
+    canal = Column(String, default="whatsapp")
+    recibido_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class ReciboCliente(Base):
     __tablename__ = "recibos_cliente"
     

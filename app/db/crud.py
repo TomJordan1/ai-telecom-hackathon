@@ -1,5 +1,6 @@
 import re
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.db import models
 
@@ -78,6 +79,56 @@ def upsert_contacto_usuario(db: Session, user_id: str, whatsapp_number: str = No
     db.commit()
     db.refresh(contacto)
     return contacto
+
+
+TTL_MENSAJES_PROCESADOS_HORAS = 24  # ventana suficiente para cubrir reintentos de Meta
+
+
+def _purgar_mensajes_procesados(db: Session):
+    """Elimina ids antiguos para que la tabla de idempotencia no crezca sin límite."""
+    from datetime import datetime, timedelta
+
+    limite = datetime.utcnow() - timedelta(hours=TTL_MENSAJES_PROCESADOS_HORAS)
+    try:
+        db.query(models.MensajeProcesado).filter(
+            models.MensajeProcesado.recibido_at < limite
+        ).delete(synchronize_session=False)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"[IDEMPOTENCIA] No se pudo purgar mensajes antiguos: {e}")
+
+
+def reclamar_mensaje_entrante(db: Session, message_id: str, canal: str = "whatsapp") -> bool:
+    """
+    Reclama el procesamiento de un mensaje entrante de forma atómica.
+
+    Devuelve True solo la primera vez que se ve `message_id`; en los reintentos
+    que envía Meta con el mismo id devuelve False y el webhook los descarta.
+    El INSERT sobre la clave primaria es lo que hace la operación atómica: si dos
+    reintentos llegan en paralelo, únicamente uno consigue insertar.
+    """
+    if not message_id:
+        # Sin identificador no hay forma de deduplicar: se procesa para no perder
+        # el mensaje, aceptando el riesgo de un duplicado.
+        return True
+
+    nuevo = models.MensajeProcesado(message_id=message_id, canal=canal)
+    try:
+        db.add(nuevo)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return False
+    except Exception as e:
+        # Si el control de idempotencia falla por otra razón, no se bloquea la
+        # atención del cliente.
+        db.rollback()
+        print(f"[IDEMPOTENCIA] Error registrando {message_id}: {e}")
+        return True
+
+    _purgar_mensajes_procesados(db)
+    return True
 
 
 def get_or_create_historial(db: Session, session_id: str, user_id: str):

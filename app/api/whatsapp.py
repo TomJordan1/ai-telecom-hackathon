@@ -10,6 +10,7 @@ from app.db.database import get_db
 from app.services.orchestrator import process_message
 from app.core.schemas import ChatRequest
 from app.services.whatsapp_sender import process_and_send_whatsapp
+from app.db.database import SessionLocal
 
 router = APIRouter()
 
@@ -17,6 +18,60 @@ router = APIRouter()
 # contactos_usuario. Permite que un jurado escriba desde cualquier celular y
 # vea una demo coherente en lugar de un error.
 USER_ID_FALLBACK = "user_a_fin_promo"
+
+
+def _extraer_texto(message: dict) -> str:
+    """Devuelve el texto del mensaje o el título del botón pulsado."""
+    tipo = message.get("type")
+    if tipo == "text":
+        return message.get("text", {}).get("body", "")
+    if tipo == "interactive":
+        interactive = message.get("interactive", {})
+        if interactive.get("type") == "button_reply":
+            return interactive.get("button_reply", {}).get("title", "")
+    return ""
+
+
+def _procesar_y_responder(phone_number: str, user_text: str, message_id: str):
+    """
+    Orquesta la respuesta y la envía, ya fuera del ciclo de vida de la petición
+    de Meta. Se ejecuta en background con su propia sesión de BD: la sesión
+    inyectada por Depends(get_db) ya está cerrada cuando corre esta tarea.
+
+    Todo el trabajo lento (LLM, RAG, envíos con delay) vive aquí para que el
+    webhook conteste 200 de inmediato y Meta no reintente el mismo evento.
+    """
+    db = SessionLocal()
+    try:
+        # El número entrante se resuelve contra contactos_usuario:
+        # cada cliente ve sus propios recibos, no los de un mock fijo.
+        user_id = crud.get_user_id_por_whatsapp(db, phone_number)
+        if user_id:
+            print(f"[WA WEBHOOK] Numero {phone_number} -> user_id={user_id}")
+        else:
+            user_id = USER_ID_FALLBACK
+            print(f"[WA WEBHOOK] Numero {phone_number} no registrado en "
+                  f"contactos_usuario, se usa fallback user_id={user_id}")
+
+        chat_request = ChatRequest(
+            session_id=f"wa_{phone_number}",
+            user_id=user_id,
+            message=user_text,
+            channel="whatsapp",
+        )
+
+        chat_response = process_message(chat_request, db)
+        print(f"[WA WEBHOOK] Respuesta generada para {message_id}: "
+              f"{len(chat_response.messages)} chunks")
+
+        process_and_send_whatsapp(phone_number, chat_response)
+        print(f"[WA WEBHOOK] Respuesta enviada a {phone_number}")
+    except Exception as e:
+        import traceback
+        print(f"[WA WEBHOOK ERROR] Fallo procesando {message_id}: {e}")
+        traceback.print_exc()
+    finally:
+        db.close()
 
 
 def _firma_valida(cuerpo: bytes, firma_header: str | None) -> bool:
@@ -60,8 +115,15 @@ async def verify_webhook(request: Request):
 @router.post("/webhook/whatsapp")
 async def receive_whatsapp_message(request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """
-    Recibe los mensajes de texto entrantes desde WhatsApp, los envía al orquestador,
-    y programa el envío de las respuestas en segundo plano para no bloquear a Meta.
+    Recibe los mensajes entrantes desde WhatsApp y delega TODO el procesamiento a
+    una tarea en segundo plano, devolviendo 200 de inmediato.
+
+    Dos protecciones contra respuestas duplicadas:
+    1. Idempotencia por message_id (wamid): si Meta reentrega el mismo evento, se
+       descarta en lugar de volver a responder.
+    2. Respuesta 200 inmediata: orquestar y enviar tarda varios segundos (LLM +
+       delays de tipeo); si eso ocurre antes del 200, Meta considera el webhook
+       caído y reintenta, lo que generaba respuestas repetidas.
     """
     try:
         # Se lee el cuerpo crudo porque la firma se calcula sobre los bytes
@@ -86,50 +148,33 @@ async def receive_whatsapp_message(request: Request, background_tasks: Backgroun
                         print(f"[WA WEBHOOK] No hay mensajes en este evento (probablemente un status update)")
                         continue
                     
-                    if messages:
-                        message = messages[0]
-                        phone_number = message["from"]
-                        print(f"[WA WEBHOOK] Mensaje de {phone_number}: tipo={message['type']}")
-                        
-                        # Extraer el texto o el botón presionado
-                        user_text = ""
-                        if message["type"] == "text":
-                            user_text = message["text"]["body"]
-                        elif message["type"] == "interactive":
-                            interactive = message["interactive"]
-                            if interactive["type"] == "button_reply":
-                                user_text = interactive["button_reply"]["title"]
-                                
-                        if user_text:
-                            print(f"[WA WEBHOOK] Texto extraido: '{user_text}' -> procesando...")
+                    for message in messages:
+                        phone_number = message.get("from")
+                        message_id = message.get("id", "")
+                        print(f"[WA WEBHOOK] Mensaje de {phone_number}: "
+                              f"tipo={message.get('type')} id={message_id}")
 
-                            # El número entrante se resuelve contra contactos_usuario:
-                            # cada cliente ve sus propios recibos, no los de un mock fijo.
-                            user_id = crud.get_user_id_por_whatsapp(db, phone_number)
-                            if user_id:
-                                print(f"[WA WEBHOOK] Numero {phone_number} -> user_id={user_id}")
-                            else:
-                                user_id = USER_ID_FALLBACK
-                                print(f"[WA WEBHOOK] Numero {phone_number} no registrado en "
-                                      f"contactos_usuario, se usa fallback user_id={user_id}")
+                        user_text = _extraer_texto(message)
+                        if not user_text:
+                            print(f"[WA WEBHOOK] No se pudo extraer texto del mensaje "
+                                  f"tipo={message.get('type')}")
+                            continue
 
-                            chat_request = ChatRequest(
-                                session_id=f"wa_{phone_number}",
-                                user_id=user_id,
-                                message=user_text,
-                                channel="whatsapp"
-                            )
-                            
-                            # 2. Orquestar (Pasar por Determinismo, RAG, y LLM)
-                            chat_response = process_message(chat_request, db)
-                            print(f"[WA WEBHOOK] Respuesta generada: {len(chat_response.messages)} chunks")
-                            
-                            # 3. Enviar la respuesta vía WhatsApp de forma asíncrona (Background Task)
-                            background_tasks.add_task(process_and_send_whatsapp, phone_number, chat_response)
-                            print(f"[WA WEBHOOK] Tarea de envio programada para {phone_number}")
-                        else:
-                            print(f"[WA WEBHOOK] No se pudo extraer texto del mensaje tipo={message['type']}")
-                            
+                        # Idempotencia: el mismo wamid solo se atiende una vez, sin
+                        # importar cuántas veces Meta reentregue el evento.
+                        if not crud.reclamar_mensaje_entrante(db, message_id, canal="whatsapp"):
+                            print(f"[WA WEBHOOK] Mensaje {message_id} ya procesado: "
+                                  f"reentrega descartada (sin respuesta duplicada).")
+                            continue
+
+                        print(f"[WA WEBHOOK] Texto extraido: '{user_text}' -> encolando...")
+                        # Orquestación y envío ocurren fuera de la petición para
+                        # devolver 200 antes de que Meta agote su timeout.
+                        background_tasks.add_task(
+                            _procesar_y_responder, phone_number, user_text, message_id
+                        )
+                        print(f"[WA WEBHOOK] Tarea programada para {phone_number}")
+
         return Response(content="EVENT_RECEIVED", status_code=200)
         
     except Exception as e:
