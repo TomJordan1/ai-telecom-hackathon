@@ -55,5 +55,10 @@ class ChatResponse(BaseModel):
     personality_metadata: PersonalityMetadata = PersonalityMetadata()
     handoff_context: Optional[Any] = None
     confidence_score: int = Field(99, ge=0, le=100)
+    caso_validado: bool = Field(
+        False,
+        description="True si la respuesta reutilizó una solución ya validada en base_casos, "
+                    "en vez de generarse desde cero. Es la señal visible del ciclo de aprendizaje."
+    )
     compliance_triggered: bool = False
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
