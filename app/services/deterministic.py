@@ -212,24 +212,43 @@ def _inferir_plan_desde_cargos(cargos: List[Dict]) -> Optional[str]:
     return None
 
 
-def _obtener_estado_deuda(conceptos_facturados: Optional[Dict]) -> Optional[Dict[str, str]]:
+def _formatear_fecha_vencimiento(valor: str) -> Optional[str]:
+    """Convierte 'YYYYMMDD' (formato de FECHA-VENCIMIENTO en el CSV) a 'YYYY-MM-DD'."""
+    if not valor or not valor.isdigit() or len(valor) != 8:
+        return None
+    try:
+        return datetime.strptime(valor, "%Y%m%d").strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _obtener_estado_deuda(conceptos_facturados: Optional[Dict], mes_emision: str = "") -> Optional[Dict[str, str]]:
     """
     Extrae el estado de deuda que viene explícitamente en el CSV.
 
     No convierte texto ambiguo en un monto ni asume que la ausencia del campo
     significa saldo cero. Solo expone el valor verificable y el período de la
     factura para poder responder consultas de deuda sin inventar información.
+
+    PERIOD_END_DATE llega vacío/corrupto en el CSV fuente (literal "00:00.0"),
+    así que se usa FECHA-VENCIMIENTO como referencia de período cuando es una
+    fecha válida, y como último recurso el mes de emisión del recibo.
     """
     info_factura = (conceptos_facturados or {}).get("info_factura", {})
     valor = str(info_factura.get("DEUDA", "")).strip()
     if not valor or valor.lower() in {"nan", "none", "null"}:
         return None
 
+    periodo = _formatear_fecha_vencimiento(str(info_factura.get("FECHA_VENCIMIENTO", "")).strip())
+    if not periodo:
+        periodo_raw = str(info_factura.get("PERIOD_END_DATE", "")).strip()
+        periodo = periodo_raw if periodo_raw and not periodo_raw.lower().endswith(":00.0") else mes_emision
+
     sin_deuda = valor.upper() in {"SIN DEUDA", "NO TIENE DEUDA", "NO REGISTRA DEUDA"}
     return {
         "valor": valor,
         "estado": "SIN_DEUDA" if sin_deuda else "REPORTADA",
-        "periodo": str(info_factura.get("PERIOD_END_DATE", "")).strip(),
+        "periodo": periodo or "",
     }
 
 
@@ -252,7 +271,7 @@ def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
     plan_actual = current_bill.plan_actual
     if not plan_actual and not _es_formato_legacy(conceptos_actuales):
         plan_actual = _inferir_plan_desde_cargos(_extraer_cargos(conceptos_actuales))
-    estado_deuda = _obtener_estado_deuda(conceptos_actuales)
+    estado_deuda = _obtener_estado_deuda(conceptos_actuales, mes_emision=current_bill.mes_emision)
 
     if not recibos_previos:
         # Solo tiene un recibo, no hay historial con qué comparar.
