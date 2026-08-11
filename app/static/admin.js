@@ -163,6 +163,9 @@ function renderCuarentenaCard(caso) {
         }
     }
 
+    // Extraer el mensaje original del usuario (para saber qué preguntó)
+    const userMessage = (caso.evidencias && caso.evidencias.user_message) || "";
+
     return `
     <div class="card">
         <div class="card-title-row">
@@ -172,6 +175,7 @@ function renderCuarentenaCard(caso) {
             </div>
             <span class="badge badge-neutral">Incertidumbre: ${(caso.incertidumbre * 100).toFixed(0)}%</span>
         </div>
+        ${userMessage ? `<div class="card-user-message">💬 "${userMessage}"</div>` : ""}
         <div class="stat-row">
             <span>Feedback inmediato: <strong>${caso.feedback_inmediato}</strong></span>
             <span>Feedback posterior: <strong>${caso.feedback_posterior}</strong></span>

@@ -324,3 +324,15 @@ body {
     outline: none;
     border-color: var(--primary);
 }
+
+/* Mensaje original del usuario en cuarentena */
+.card-user-message {
+    margin-top: 6px;
+    font-size: 0.83rem;
+    color: #374151;
+    font-style: italic;
+    padding: 6px 10px;
+    background: #f9fafb;
+    border-radius: 6px;
+    border-left: 3px solid #6b7280;
+}
