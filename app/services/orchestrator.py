@@ -668,20 +668,14 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
 
     crud.update_historial(db, request.session_id, updates)
 
-    # Paso 7.5: Si era un caso nuevo (sin match), registrar en cuarentena
-    # SOLO si el patrón es reutilizable. SIN_CAMBIOS, NUEVO_CLIENTE y
-    # CONSULTA_GENERAL están excluidos del case_matcher (nunca se reutilizan),
-    # así que registrarlos solo llena el panel de casos que un agente no puede
-    # promover con efecto real.
-    _PATRONES_NO_REUTILIZABLES = {"SIN_CAMBIOS", "NUEVO_CLIENTE", "CONSULTA_GENERAL", ""}
-    detected = fact_payload.get("detected_event", "")
-    if not caso_match and detected not in _PATRONES_NO_REUTILIZABLES:
+    # Paso 7.5: Si era un caso nuevo (sin match), registrar en cuarentena.
+    # Se incluye user_message en las evidencias para que en el panel se vea
+    # qué preguntó el usuario, no solo el patrón técnico.
+    if not caso_match:
         solucion_serializada = {
             "intent_category": response.intent_category,
             "messages": [m.model_dump() for m in response.messages]
         }
-        # Incluir el mensaje original del usuario para que en el panel de
-        # cuarentena se pueda identificar qué preguntó, no solo el patrón técnico.
         fact_payload_con_contexto = {**fact_payload, "user_message": request.message}
         register_new_case(
             db=db,
