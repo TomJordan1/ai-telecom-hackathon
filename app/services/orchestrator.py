@@ -1,4 +1,5 @@
 import time
+from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 from sqlalchemy.orm import Session
@@ -125,6 +126,14 @@ def _finalizar(db: Session, request: ChatRequest, response: ChatResponse) -> Cha
 def _tipo_consulta_directa(message: str) -> Optional[str]:
     """Identifica consultas que se responden solo con hechos del recibo actual."""
     texto = message.lower()
+
+    # Señales de intención distinta a "consultar" (cancelar, cambiar, portar):
+    # sin este filtro, "cómo cancelo mi plan" se confundía con "¿cuál es mi
+    # plan?" porque ambas contienen la substring "mi plan".
+    _OTRA_INTENCION = ("cancel", "portar", "cambiar de plan", "dar de baja", "baja de plan")
+    if any(termino in texto for termino in _OTRA_INTENCION):
+        return None
+
     if any(termino in texto for termino in ("deuda", "deudas", "saldo pendiente", "pendiente de pago")):
         return "DEUDA"
     if "plan actual" in texto or "mi plan" in texto or "qué plan tengo" in texto or "que plan tengo" in texto:
@@ -132,11 +141,19 @@ def _tipo_consulta_directa(message: str) -> Optional[str]:
     return None
 
 
+# Estos hechos se leen directo de un campo de la base de datos, sin ninguna
+# heurística de detección de evento de por medio: no hay ambigüedad sobre si
+# "se reconoció el patrón" (que es lo que mide uncertainty_score). O el dato
+# está en el recibo, o se declara explícitamente que no se puede verificar.
+# Por eso NO reciben el uncertainty_score del motor de variación de recibo.
+CONFIANZA_CONSULTA_DIRECTA_VERIFICADA = 99
+CONFIANZA_CONSULTA_DIRECTA_SIN_DATO = 90
+
+
 def _respuesta_consulta_directa(
     request: ChatRequest,
     fact_payload: Dict[str, Any],
     perfil_lexico: str,
-    confidence_score: int,
 ) -> Optional[ChatResponse]:
     """
     Responde consultas de deuda y plan desde campos verificados del recibo.
@@ -154,14 +171,16 @@ def _respuesta_consulta_directa(
                     f"Según tu factura del período {periodo}, el estado de deuda registrado es: "
                     f"{estado_deuda.get('valor')}."
                 )
+            confianza = CONFIANZA_CONSULTA_DIRECTA_VERIFICADA
         else:
             texto = "Tu recibo disponible no informa un estado de deuda verificable, así que no puedo confirmar un saldo pendiente."
+            confianza = CONFIANZA_CONSULTA_DIRECTA_SIN_DATO
 
         return ChatResponse(
             session_id=request.session_id,
             intent_category="CONSULTA_DEUDA",
             sentiment_score=3,
-            confidence_score=confidence_score,
+            confidence_score=confianza,
             messages=[MessageChunk(text=texto, type="explanation")],
             personality_metadata=PersonalityMetadata(
                 lucia_tone=persona.tono_para_metadata(perfil_lexico)
@@ -172,14 +191,16 @@ def _respuesta_consulta_directa(
         plan_actual = fact_payload.get("plan_actual")
         if plan_actual:
             texto = f"El plan identificado en tu recibo actual es: {plan_actual}."
+            confianza = CONFIANZA_CONSULTA_DIRECTA_VERIFICADA
         else:
             texto = "Tu recibo disponible no permite identificar con certeza el nombre de tu plan actual."
+            confianza = CONFIANZA_CONSULTA_DIRECTA_SIN_DATO
 
         return ChatResponse(
             session_id=request.session_id,
             intent_category="CONSULTA_PLAN_ACTUAL",
             sentiment_score=3,
-            confidence_score=confidence_score,
+            confidence_score=confianza,
             messages=[MessageChunk(text=texto, type="explanation")],
             personality_metadata=PersonalityMetadata(
                 lucia_tone=persona.tono_para_metadata(perfil_lexico)
@@ -200,17 +221,29 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     started_at = time.monotonic()
     components_invoked = ["compliance_filter"]
 
+    # Se lee la última actividad ANTES de tocar el historial: get_or_create_historial
+    # puede hacer un commit (transferencia de session_id) que ya actualizaría
+    # updated_at, perdiendo la señal de "cuánto tiempo pasó desde el turno anterior".
+    ultima_actividad_previa = crud.peek_ultima_actividad(db, request.session_id, request.user_id)
+
     # Paso 1: Recepción, Carga de Estado y Memoria
     historial = crud.get_or_create_historial(db, request.session_id, request.user_id)
     comentarios = historial.comentarios_emocionales or []
     pending_emotions = [e for e in comentarios if not e.get("referenciado", False)]
     historial_conversacion = historial.historial_conversacion or []
-    
-    # Seguimiento de pendientes: si el último caso quedó sin resolver y la sesión se 
-    # retomó (lo sabemos si hay historial previo), marcamos la alerta para el LLM.
+
+    # Seguimiento de pendientes: solo tiene sentido si la sesión se RETOMÓ tras
+    # una brecha real de inactividad, no en cada turno dentro de la misma
+    # conversación activa. Sin este control, cualquier turno que deje
+    # estado_resolucion=False (p. ej. un mes sin variación de recibo) hacía que
+    # el turno inmediatamente siguiente preguntara "¿quedó resuelto lo anterior?",
+    # aunque hubieran pasado 5 segundos.
+    UMBRAL_SESION_RETOMADA_MINUTOS = 30
     pending_issue_followup = False
-    if historial.estado_resolucion is False and len(historial_conversacion) > 0:
-        pending_issue_followup = True
+    if historial.estado_resolucion is False and len(historial_conversacion) > 0 and ultima_actividad_previa:
+        minutos_inactivo = (datetime.utcnow() - ultima_actividad_previa).total_seconds() / 60
+        if minutos_inactivo >= UMBRAL_SESION_RETOMADA_MINUTOS:
+            pending_issue_followup = True
 
     # Paso 2: Pre-filtro de Compliance (Regex, antes de cualquier IA)
     blocked_message = validate_compliance(request.message, db)
@@ -372,7 +405,6 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         request=request,
         fact_payload=fact_payload,
         perfil_lexico=perfil_lexico,
-        confidence_score=int((1 - uncertainty_score) * 100),
     )
     if respuesta_directa:
         components_invoked.append("verified_account_lookup")
@@ -386,11 +418,13 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             request.session_id,
             {"estado_resolucion": campo_verificado},
         )
+        # Nota: no se propaga uncertainty_score aquí porque esta rama no lo usó
+        # para decidir la confianza (ver _respuesta_consulta_directa): es una
+        # lectura directa de dato verificado, no una detección de patrón.
         _registrar_auditoria(
             db, request.session_id, started_at, respuesta_directa.intent_category, components_invoked,
             detected_event=fact_payload.get("detected_event"),
             confidence_score=respuesta_directa.confidence_score,
-            uncertainty_score=uncertainty_score,
             evidence=fact_payload.get("evidence"),
         )
         return _finalizar(db, request, respuesta_directa)

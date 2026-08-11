@@ -131,6 +131,33 @@ def reclamar_mensaje_entrante(db: Session, message_id: str, canal: str = "whatsa
     return True
 
 
+def peek_ultima_actividad(db: Session, session_id: str, user_id: str):
+    """
+    Lee (sin escribir) la fecha de la última actividad registrada para este
+    usuario/sesión, ANTES de que el turno actual la actualice.
+
+    Se usa para distinguir una sesión genuinamente retomada tras un tiempo
+    (donde sí tiene sentido preguntar "¿quedó resuelto lo anterior?") de un
+    turno más dentro de la misma conversación activa (donde no).
+
+    Debe llamarse antes de get_or_create_historial: esa función puede hacer
+    un commit por transferencia de session_id, y ese commit por sí solo ya
+    actualiza `updated_at` por el onupdate del modelo, borrando la señal que
+    necesitamos leer aquí.
+    """
+    if user_id and user_id != "anonimo":
+        historial = db.query(models.HistorialInteracciones).filter(
+            models.HistorialInteracciones.user_id == user_id
+        ).order_by(models.HistorialInteracciones.updated_at.desc()).first()
+        if historial:
+            return historial.updated_at
+
+    historial = db.query(models.HistorialInteracciones).filter(
+        models.HistorialInteracciones.session_id == session_id
+    ).first()
+    return historial.updated_at if historial else None
+
+
 def get_or_create_historial(db: Session, session_id: str, user_id: str):
     """
     Recupera o crea el historial conversacional de un usuario.
