@@ -132,28 +132,63 @@ def reclamar_mensaje_entrante(db: Session, message_id: str, canal: str = "whatsa
 
 
 def get_or_create_historial(db: Session, session_id: str, user_id: str):
-    # Intentamos recuperar el historial asociado al cliente (memoria a largo plazo)
+    """
+    Recupera o crea el historial conversacional de un usuario.
+
+    Estrategia de lookup:
+    1. Busca por user_id (memoria a largo plazo, sobrevive entre sesiones).
+    2. Si lo encuentra pero el session_id cambió (nueva pestaña/sesión),
+       transfiere el session_id para que las escrituras posteriores lo encuentren.
+    3. Fallback: busca por session_id (usuarios anónimos o sin recibos).
+    4. Si no existe nada, crea un registro nuevo.
+    """
     if user_id and user_id != "anonimo":
         historial = db.query(models.HistorialInteracciones).filter(
             models.HistorialInteracciones.user_id == user_id
         ).order_by(models.HistorialInteracciones.updated_at.desc()).first()
-        
+
         if historial:
-            # Si se conectó desde una nueva sesión web, actualizamos el session_id
-            # para transferirle su historial.
             if historial.session_id != session_id:
-                historial.session_id = session_id
-                db.commit()
-                db.refresh(historial)
+                # El usuario volvió con un nuevo session_id. Transferimos.
+                # Primero, eliminar cualquier fila huérfana que ya ocupe ese
+                # session_id (puede pasar si el mismo browser fue usado por
+                # otro usuario antes, o si se generó un registro anónimo previo).
+                try:
+                    conflicto = db.query(models.HistorialInteracciones).filter(
+                        models.HistorialInteracciones.session_id == session_id,
+                        models.HistorialInteracciones.user_id != user_id,
+                    ).first()
+                    if conflicto:
+                        db.delete(conflicto)
+                        db.flush()
+
+                    historial.session_id = session_id
+                    db.commit()
+                    db.refresh(historial)
+                except IntegrityError:
+                    db.rollback()
+                    # Si aún así falla, usamos el historial tal cual está.
+                    # Las escrituras posteriores lo buscarán por session_id antiguo,
+                    # así que lo refrescamos para tener el valor actual.
+                    db.refresh(historial)
             return historial
 
     # Fallback al comportamiento por session_id (para no clientes)
-    historial = db.query(models.HistorialInteracciones).filter(models.HistorialInteracciones.session_id == session_id).first()
+    historial = db.query(models.HistorialInteracciones).filter(
+        models.HistorialInteracciones.session_id == session_id
+    ).first()
     if not historial:
         historial = models.HistorialInteracciones(session_id=session_id, user_id=user_id)
-        db.add(historial)
-        db.commit()
-        db.refresh(historial)
+        try:
+            db.add(historial)
+            db.commit()
+            db.refresh(historial)
+        except IntegrityError:
+            db.rollback()
+            # Raro: alguien más creó la misma sesión en paralelo. Recuperarla.
+            historial = db.query(models.HistorialInteracciones).filter(
+                models.HistorialInteracciones.session_id == session_id
+            ).first()
     return historial
 
 EMOTIONAL_COMMENT_TTL_DAYS = 14  # expiración: no crecer el contexto indefinidamente
@@ -174,6 +209,7 @@ def add_comentario_emocional(db: Session, session_id: str, text: str, importance
         models.HistorialInteracciones.session_id == session_id
     ).first()
     if not historial:
+        print(f"[MEMORIA] add_comentario_emocional: no se encontró historial para session_id={session_id}")
         return None
 
     ahora = datetime.utcnow()
@@ -233,6 +269,7 @@ def append_turno_conversacion(db: Session, session_id: str, role: str, text: str
         models.HistorialInteracciones.session_id == session_id
     ).first()
     if not historial:
+        print(f"[MEMORIA] append_turno_conversacion: no se encontró historial para session_id={session_id}")
         return None
 
     turnos = list(historial.historial_conversacion or [])
