@@ -184,7 +184,9 @@ def list_base_casos(db: Session = Depends(get_db)):
                 "veces_aplicado": c.veces_aplicado,
                 "tasa_exito": c.tasa_exito,
                 "validado_por": c.validado_por,
-                "fecha_validacion": c.fecha_validacion.isoformat() if c.fecha_validacion else None
+                "fecha_validacion": c.fecha_validacion.isoformat() if c.fecha_validacion else None,
+                "solucion": c.solucion_estructurada,
+                "condiciones": c.condiciones,
             }
             for c in casos
         ]

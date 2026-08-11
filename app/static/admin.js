@@ -200,19 +200,38 @@ async function loadBaseCasos() {
             list.innerHTML = "<p class='empty-state'>Todavía no hay casos validados.</p>";
             return;
         }
-        list.innerHTML = data.casos.map((c) => `
-        <div class="card">
-            <div class="card-title-row">
-                <div>
-                    <div class="card-title">${c.patron}</div>
-                    <div class="card-subtitle">Validado por ${c.validado_por} · ${fmtFecha(c.fecha_validacion)}</div>
+        list.innerHTML = data.casos.map((c) => {
+            // Extraer texto de la solución
+            let solucionTexto = "";
+            if (c.solucion) {
+                if (typeof c.solucion === "string") {
+                    solucionTexto = c.solucion;
+                } else if (c.solucion.texto) {
+                    solucionTexto = c.solucion.texto;
+                } else if (c.solucion.messages) {
+                    solucionTexto = c.solucion.messages.map(m => m.text).join(" ");
+                }
+            }
+            // Extraer contexto del caso (user_id, último mensaje, evento)
+            const ctx = c.condiciones || {};
+            const userId = ctx.user_id || ctx.origen || "";
+            const evento = ctx.detected_event || c.patron;
+
+            return `
+            <div class="card">
+                <div class="card-title-row">
+                    <div>
+                        <div class="card-title">${c.patron}</div>
+                        <div class="card-subtitle">Validado por ${c.validado_por} · ${fmtFecha(c.fecha_validacion)}${userId ? ` · Usuario: ${userId}` : ""}</div>
+                    </div>
+                    <span class="badge badge-done">${c.veces_aplicado} usos</span>
                 </div>
-                <span class="badge badge-done">${c.veces_aplicado} usos</span>
-            </div>
-            <div class="stat-row">
-                <span>Tasa de éxito: <strong>${(c.tasa_exito * 100).toFixed(0)}%</strong></span>
-            </div>
-        </div>`).join("");
+                ${solucionTexto ? `<div class="card-details" style="margin-top:8px;white-space:pre-wrap;font-size:0.83rem">${solucionTexto}</div>` : ""}
+                <div class="stat-row">
+                    <span>Tasa de éxito: <strong>${(c.tasa_exito * 100).toFixed(0)}%</strong></span>
+                </div>
+            </div>`;
+        }).join("");
     } catch (e) {
         list.innerHTML = `<p class="empty-state">Error al cargar: ${e.message}</p>`;
     }
