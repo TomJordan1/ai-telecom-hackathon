@@ -122,9 +122,12 @@ def _generate_mock_response(
             plan_recomendado=RecommendedPlan(**recommended_plan)
         )
     elif not cross_sell_eligible and intent_category != "BLOQUEO_COMPLIANCE":
-        # Efecto efervescente en MOCK
-        plan_actual = deterministic_payload.get('plan_actual', 'tu plan actual')
-        messages.append(MessageChunk(text=f"Recuerda que con {plan_actual} tienes grandes beneficios para seguir disfrutando. ¡Cualquier otra duda, aquí estoy!", type="explanation", delay_ms=1000))
+        # Efecto efervescente en MOCK: solo si conocemos el plan del usuario
+        plan_actual = deterministic_payload.get('plan_actual')
+        if plan_actual:
+            messages.append(MessageChunk(text=f"Recuerda que con {plan_actual} tienes grandes beneficios para seguir disfrutando. ¡Cualquier otra duda, aquí estoy!", type="explanation", delay_ms=1000))
+        else:
+            messages.append(MessageChunk(text="¡Cualquier otra duda sobre tu recibo, aquí estoy para ayudarte!", type="explanation", delay_ms=1000))
         
     historial = [BillSummary(month=pb['month'], amount=pb['amount']) for pb in deterministic_payload.get('previous_bills', [])]
 

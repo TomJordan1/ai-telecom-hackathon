@@ -123,8 +123,11 @@ def init_db():
 
         print(f"Procesando recibos para {len(unique_accounts)} cuentas...")
 
-        # Construir mapa de clientes indexado por FINANCIAL_ACCOUNT para lookup rápido
-        clientes_map = df_clientes.set_index("FINANCIAL_ACCOUNT").to_dict(orient="index")
+        # Construir mapa de clientes indexado por FINANCIAL_ACCOUNT para lookup rápido.
+        # Un FINANCIAL_ACCOUNT puede tener múltiples filas (una por línea/servicio),
+        # por lo que se desduplicamos quedándonos con la primera ocurrencia.
+        df_clientes_unique = df_clientes.drop_duplicates(subset="FINANCIAL_ACCOUNT", keep="first")
+        clientes_map = df_clientes_unique.set_index("FINANCIAL_ACCOUNT").to_dict(orient="index")
 
         # ------------------------------------------------------------------
         # 4. Generar recibos agrupados por cuenta + ciclo
