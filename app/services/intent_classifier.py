@@ -64,6 +64,13 @@ _SOLICITUD_SENSIBLE_PATRONES: Dict[str, List[str]] = {
         r"\bdejar\s+(el\s+)?servicio\b",
         r"\bterminar\s+(mi\s+)?contrato\b",
     ],
+    "CAMBIO_PLAN": [
+        r"\bcambiar(me)?\s+(de|mi|el)\s+plan\b",
+        r"\bmigrar(me)?\s+(de|a\s+otro)\s+plan\b",
+        r"\bquiero\s+otro\s+plan\b",
+        r"\bpasar(me)?\s+a\s+otro\s+plan\b",
+        r"\bcambio\s+de\s+plan\b",
+    ],
     "PORTABILIDAD": [
         r"\bportabilidad\b",
         r"\bportar\s+(mi\s+)?(n[uú]mero|l[ií]nea)\b",

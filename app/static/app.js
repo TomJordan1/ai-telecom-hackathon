@@ -69,7 +69,7 @@ function addConfidenceBadge(afterMessageDiv, confidenceScore, casoValidado) {
 
 function addHandoffBanner(intentCategory) {
     // Elige el texto del aviso según el motivo de la derivación.
-    const esSensible = ['CANCELACION_PLAN', 'PORTABILIDAD', 'NUEVA_LINEA'].includes(intentCategory);
+    const esSensible = ['CANCELACION_PLAN', 'PORTABILIDAD', 'NUEVA_LINEA', 'CAMBIO_PLAN'].includes(intentCategory);
     const titulo = esSensible
         ? '📋 Trámite en gestión'
         : '👤 Derivado a un asesor';
