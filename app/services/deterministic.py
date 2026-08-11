@@ -312,6 +312,22 @@ def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
     if patron_recurrente:
         evidence.append(patron_recurrente)
 
+    # Enriquecer con órdenes CRM relevantes para el evento detectado (solo datos reales).
+    # Aporta evidencia de contexto: cuándo/por qué ocurrió una suspensión, cambio de plan, etc.
+    ordenes_contexto = []
+    _EVENTOS_CON_ORDENES = {"RECONEXION_MOROSIDAD", "PRORRATEO_CAMBIO_PLAN", "CUOTA_EQUIPO", "NUEVA_LINEA"}
+    if detected_event in _EVENTOS_CON_ORDENES and not _es_formato_legacy(conceptos_actuales):
+        customer_key = conceptos_actuales.get("info_factura", {}).get("CUSTOMER_KEY", "")
+        if customer_key:
+            ordenes_raw = crud.get_ordenes_por_customer_key(db, customer_key, limit=5)
+            for o in ordenes_raw:
+                ordenes_contexto.append({
+                    "tipo": o.order_type,
+                    "motivo": o.order_reason,
+                    "fecha_inicio": o.start_date.isoformat() if o.start_date else None,
+                    "fecha_fin": o.completion_date.isoformat() if o.completion_date else None,
+                })
+
     return {
         "moneda": MONEDA_CODIGO,
         "simbolo_moneda": MONEDA_SIMBOLO,
@@ -329,6 +345,7 @@ def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
         "variation_percentage": variation_pct,
         "detected_event": detected_event,
         "evidence": evidence,
+        "ordenes_contexto": ordenes_contexto,
         "upcoming_alerts": _calculate_upcoming_alerts(current_bill),
     }
 

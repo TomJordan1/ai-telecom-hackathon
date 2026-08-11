@@ -414,3 +414,18 @@ def promover_caso_a_base(db: Session, caso_id: str, validado_por: str = "AGENTE_
     db.refresh(nuevo_caso_base)
     return nuevo_caso_base
 
+
+
+# --- Órdenes del cliente ---
+
+def get_ordenes_por_customer_key(db: Session, customer_key: str, limit: int = 10):
+    """
+    Recupera las últimas órdenes ejecutadas para un CUSTOMER_KEY, ordenadas
+    por fecha de inicio descendente. Se usa para enriquecer la evidencia del
+    motor determinista con contexto de cuándo/por qué ocurrió una acción CRM.
+    """
+    if not customer_key:
+        return []
+    return db.query(models.OrdenCliente).filter(
+        models.OrdenCliente.customer_key == customer_key
+    ).order_by(models.OrdenCliente.start_date.desc()).limit(limit).all()

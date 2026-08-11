@@ -21,7 +21,7 @@ os.chdir(PROJECT_ROOT)
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.db.database import engine, Base, SessionLocal
-from app.db.models import ReciboCliente, CatalogoPlanes, TerminosRestringidos, ContactoUsuario
+from app.db.models import ReciboCliente, CatalogoPlanes, TerminosRestringidos, ContactoUsuario, OrdenCliente
 
 # ---------------------------------------------------------------------------
 # Rutas absolutas a los CSV (no depende del cwd de ejecución)
@@ -29,6 +29,7 @@ from app.db.models import ReciboCliente, CatalogoPlanes, TerminosRestringidos, C
 DISCLAIMER_DIR = PROJECT_ROOT / "disclaimer"
 PATH_CARGOS = DISCLAIMER_DIR / "Cargos_FacturadosV2.csv"
 PATH_CLIENTES = DISCLAIMER_DIR / "REGISTROS_CLIENTES_20MIL.csv"
+PATH_ORDENES = DISCLAIMER_DIR / "Ordenes.csv"
 
 # Límite de cuentas para desarrollo local
 MAX_USERS = 500
@@ -218,6 +219,56 @@ def init_db():
             )
 
         db.add_all(contactos_a_insertar)
+
+        # ------------------------------------------------------------------
+        # 6. Poblar OrdenCliente (historial de órdenes CRM/OSS)
+        # ------------------------------------------------------------------
+        print("Cargando órdenes...")
+        try:
+            df_ordenes = pd.read_csv(PATH_ORDENES)
+        except Exception as e:
+            print(f"  Aviso: no se pudo leer Ordenes.csv ({e}). Se omite la ingesta de órdenes.")
+            df_ordenes = pd.DataFrame()
+
+        if not df_ordenes.empty:
+            # Normalizar CUSTOMER_KEY para el join
+            df_ordenes["CUSTOMER_KEY"] = df_ordenes["CUSTOMER_KEY"].astype(str).str.strip()
+
+            # Solo ingerir órdenes de los CUSTOMER_KEYs que ya están en los recibos cargados.
+            # La relación Cargos→Ordenes es vía CUSTOMER_KEY (presente en info_factura de cada recibo).
+            customer_keys_ingeridos = set()
+            for r in recibos_a_insertar:
+                ck = (r.conceptos_facturados or {}).get("info_factura", {}).get("CUSTOMER_KEY", "")
+                if ck:
+                    customer_keys_ingeridos.add(ck)
+
+            df_ordenes_filtrado = df_ordenes[df_ordenes["CUSTOMER_KEY"].isin(customer_keys_ingeridos)]
+            print(f"  {len(df_ordenes_filtrado)} órdenes corresponden a las {len(customer_keys_ingeridos)} cuentas ingeridas.")
+
+            ordenes_a_insertar = []
+            for _, row in df_ordenes_filtrado.iterrows():
+                start_dt = None
+                completion_dt = None
+                try:
+                    start_dt = pd.to_datetime(row.get("ORDER_ACTION_START_DATE"))
+                except Exception:
+                    pass
+                try:
+                    completion_dt = pd.to_datetime(row.get("ORDER_ACTION_COMPLETION_DATE"))
+                except Exception:
+                    pass
+
+                ordenes_a_insertar.append(OrdenCliente(
+                    customer_key=str(row["CUSTOMER_KEY"]),
+                    subscriber_key=str(row.get("SUBSCRIBER_KEY", "")),
+                    order_type=str(row.get("ORDER_ITEM_TYPE_DESC", "")),
+                    order_reason=str(row.get("ORDER_ACTION_REASON_DESC", "")),
+                    start_date=start_dt,
+                    completion_date=completion_dt,
+                ))
+
+            db.add_all(ordenes_a_insertar)
+            print(f"  {len(ordenes_a_insertar)} órdenes preparadas para inserción.")
 
         # ------------------------------------------------------------------
         # Commit

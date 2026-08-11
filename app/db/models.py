@@ -141,3 +141,21 @@ class AuditLog(Base):
     # Permite construir la cola de atención humana sin reconstruir todo el flujo.
     handoff_context = Column(JSON, nullable=True)
     atendido = Column(Boolean, default=False)
+
+
+class OrdenCliente(Base):
+    """
+    Historial de órdenes ejecutadas sobre la cuenta del cliente (CRM/OSS).
+    Fuente: Ordenes.csv. Se usa como evidencia de contexto en el motor
+    determinista: explica cuándo y por qué ocurrió una suspensión, reconexión,
+    cambio de plan o alta, enriqueciendo la explicación del recibo.
+    """
+    __tablename__ = "ordenes_cliente"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    customer_key = Column(String, index=True)
+    subscriber_key = Column(String, nullable=True)
+    order_type = Column(String)           # ORDER_ITEM_TYPE_DESC: Cambiar, Reconectar por Cobranza, Alta, etc.
+    order_reason = Column(String)         # ORDER_ACTION_REASON_DESC: Pedido de Cliente, Cobranza - Suspensión Parcial, etc.
+    start_date = Column(DateTime, nullable=True)
+    completion_date = Column(DateTime, nullable=True)
