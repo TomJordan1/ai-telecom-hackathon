@@ -42,7 +42,7 @@ class ReciboCliente(Base):
     monto_total = Column(Float)
     fecha_emision = Column(DateTime)
     conceptos_facturados = Column(JSON) # e.g. {"cargo_fijo": 99.90, "cuota_equipo": 20.00}
-    plan_actual = Column(String)
+    plan_actual = Column(String, nullable=True)
     
 class HistorialInteracciones(Base):
     __tablename__ = "historial_interacciones"
