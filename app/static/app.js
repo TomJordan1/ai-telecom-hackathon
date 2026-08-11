@@ -67,6 +67,49 @@ function addConfidenceBadge(afterMessageDiv, confidenceScore, casoValidado) {
     scrollToBottom();
 }
 
+function addHandoffBanner(intentCategory) {
+    // Elige el texto del aviso según el motivo de la derivación.
+    const esSensible = ['CANCELACION_PLAN', 'PORTABILIDAD', 'NUEVA_LINEA'].includes(intentCategory);
+    const titulo = esSensible
+        ? '📋 Trámite en gestión'
+        : '👤 Derivado a un asesor';
+    const detalle = esSensible
+        ? 'Tu solicitud quedó registrada. Un asesor la retomará con todo el contexto; no hace falta que repitas nada.'
+        : 'Tu caso fue derivado a un agente especializado con el contexto ya preparado.';
+
+    const bannerDiv = document.createElement('div');
+    bannerDiv.classList.add('handoff-banner');
+    bannerDiv.innerHTML = `
+        <div class="handoff-title">${titulo}</div>
+        <div class="handoff-detail">${detalle}</div>
+        <button class="handoff-nueva-consulta" onclick="nuevaConsulta()">
+            Hacer otra consulta
+        </button>
+    `;
+    messagesContainer.appendChild(bannerDiv);
+
+    // Deshabilitar el input para dejar claro que este hilo ya está en manos
+    // de un asesor; el botón del banner ofrece la salida limpia.
+    messageInput.disabled = true;
+    sendButton.disabled = true;
+    messageInput.placeholder = 'En espera de asesor — usa el botón de arriba para otra consulta';
+
+    scrollToBottom();
+}
+
+function nuevaConsulta() {
+    // Restablece el chat al estado inicial sin borrar el historial del servidor
+    // (la sesión sigue viva para el asesor que la retome).
+    messageInput.disabled = false;
+    sendButton.disabled = false;
+    messageInput.placeholder = 'Escribe tu consulta aquí...';
+    messageInput.focus();
+
+    // Opcional: eliminar el banner del DOM para que no ocupe espacio permanente.
+    const banner = document.querySelector('.handoff-banner');
+    if (banner) banner.remove();
+}
+
 function addUpsellCard(suggestion) {
     const cardDiv = document.createElement('div');
     cardDiv.classList.add('message', 'bot');
@@ -153,6 +196,12 @@ async function sendMessage() {
         if (data.plan_optimizer_suggestion && data.plan_optimizer_suggestion.available) {
             await sleep(1000);
             addUpsellCard(data.plan_optimizer_suggestion);
+        }
+
+        // Si el turno derivó a un agente humano, mostrar un aviso visual claro
+        // y dejar el input en estado "en espera de asesor".
+        if (data.requires_human_intervention) {
+            addHandoffBanner(data.intent_category);
         }
         
     } catch (error) {

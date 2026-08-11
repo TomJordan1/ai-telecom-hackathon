@@ -355,3 +355,51 @@ body {
     font-size: 0.75rem !important;
     color: #9ca3af !important;
 }
+
+/* -----------------------------------------------------------------------
+   Banner de derivación a agente humano
+   Aparece cuando requires_human_intervention = true.
+   Visualmente distinto al bubble normal para que sea inequívoco.
+----------------------------------------------------------------------- */
+.handoff-banner {
+    align-self: stretch;
+    background: #eff6ff;
+    border: 1px solid #93c5fd;
+    border-left: 4px solid #3b82f6;
+    border-radius: 12px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    animation: fadeIn 0.3s ease;
+}
+
+.handoff-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: #1d4ed8;
+}
+
+.handoff-detail {
+    font-size: 0.83rem;
+    color: #374151;
+    line-height: 1.45;
+}
+
+.handoff-nueva-consulta {
+    margin-top: 4px;
+    align-self: flex-start;
+    background: #3b82f6;
+    color: white;
+    border: none;
+    padding: 7px 14px;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.handoff-nueva-consulta:hover {
+    background: #2563eb;
+}
