@@ -19,7 +19,7 @@ SQLAlchemy==2.0.51
 # Driver de PostgreSQL. Necesario cuando DATABASE_URL apunta a Supabase; con
 # SQLite no se usa, pero se instala para que el mismo requirements sirva en local
 # y en producción.
-psycopg2-binary==2.9.12
+# psycopg2-binary==2.9.12
 
 # --- Capa RAG (Supabase + pgvector) ---
 supabase==2.13.0
@@ -40,3 +40,7 @@ requests==2.34.2
 
 # --- Bot de Telegram (scripts/telegram_bot.py) ---
 python-telegram-bot==22.8
+
+# --- Procesamiento de Datos ---
+pandas==2.2.3
+openpyxl==3.1.5

@@ -132,6 +132,22 @@ def reclamar_mensaje_entrante(db: Session, message_id: str, canal: str = "whatsa
 
 
 def get_or_create_historial(db: Session, session_id: str, user_id: str):
+    # Intentamos recuperar el historial asociado al cliente (memoria a largo plazo)
+    if user_id and user_id != "anonimo":
+        historial = db.query(models.HistorialInteracciones).filter(
+            models.HistorialInteracciones.user_id == user_id
+        ).order_by(models.HistorialInteracciones.updated_at.desc()).first()
+        
+        if historial:
+            # Si se conectó desde una nueva sesión web, actualizamos el session_id
+            # para transferirle su historial.
+            if historial.session_id != session_id:
+                historial.session_id = session_id
+                db.commit()
+                db.refresh(historial)
+            return historial
+
+    # Fallback al comportamiento por session_id (para no clientes)
     historial = db.query(models.HistorialInteracciones).filter(models.HistorialInteracciones.session_id == session_id).first()
     if not historial:
         historial = models.HistorialInteracciones(session_id=session_id, user_id=user_id)

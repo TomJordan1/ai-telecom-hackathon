@@ -222,6 +222,7 @@ def extract_emotional_comment(message: str) -> Optional[str]:
         r"\b(la verdad|sinceramente|honestamente)\b.{0,30}\b(cansad[oa]|frustrad[oa]|molest[oa]|preocupad[oa])\b",
         r"\b(siempre|otra vez|de nuevo)\b.{0,20}\b(lo mismo|igual|pasa esto|pasa lo mismo)\b",
         r"\b(se que no es tu culpa|sé que no es tu culpa|no es tu culpa)\b",
+        r"\b(no creo que un bot|dudo que un bot|eres un bot|seguro que un bot|no vas a entender|hablar con un humano|pasame con un humano|bot pueda)\b",
     ]
     for patron in patrones:
         if re.search(patron, message, re.IGNORECASE):

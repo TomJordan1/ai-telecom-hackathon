@@ -1,13 +1,13 @@
 const messagesContainer = document.getElementById('chat-messages');
 const messageInput = document.getElementById('message-input');
 const sendButton = document.getElementById('send-button');
-const userSelect = document.getElementById('user-select');
+const loginOverlay = document.getElementById('login-overlay');
+const loginIdInput = document.getElementById('login-id');
+const loginBtn = document.getElementById('login-btn');
+const currentUserDisplay = document.getElementById('current-user-display');
 
-// La memoria de Lucía está indexada por session_id, así que la sesión se
-// persiste en el navegador: al recargar o cerrar y volver a abrir, se retoma la
-// misma conversación (el historial y los comentarios emocionales viven en la BD).
-// Para empezar de cero: borrar 'lucia_session_id' de localStorage, o usar el
-// botón "Nueva conversación".
+let currentUserId = null;
+
 const sessionId = (() => {
     const guardada = localStorage.getItem('lucia_session_id');
     if (guardada) return guardada;
@@ -15,6 +15,26 @@ const sessionId = (() => {
     localStorage.setItem('lucia_session_id', nueva);
     return nueva;
 })();
+
+// Login logic
+loginBtn.addEventListener('click', () => {
+    const id = loginIdInput.value.trim();
+    if (id) {
+        currentUserId = id;
+        loginOverlay.classList.add('hidden');
+        messageInput.disabled = false;
+        sendButton.disabled = false;
+        currentUserDisplay.textContent = `Usuario: ${id}`;
+        
+        // Start the conversation silently or send an initial greeting event if we wanted to
+        // For now, the static greeting is already there. 
+        // We could theoretically fetch history here if we exposed a GET endpoint.
+    }
+});
+loginIdInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') loginBtn.click();
+});
+
 
 function nuevaConversacion() {
     localStorage.removeItem('lucia_session_id');
@@ -36,11 +56,6 @@ function addMessage(text, sender, type = 'normal') {
     return messageDiv;
 }
 
-// Indicador visible del ciclo de aprendizaje: si un caso ya fue validado por
-// feedback/un asesor, la respuesta se resuelve con conocimiento reutilizado en
-// vez de generarse desde cero, y la confianza sube. Esto hace visible en la UI
-// la diferencia entre "caso nuevo" y "caso ya aprendido", que es el
-// diferenciador del producto, no solo un detalle interno del backend.
 function addConfidenceBadge(afterMessageDiv, confidenceScore, casoValidado) {
     const badge = document.createElement('div');
     badge.classList.add('confidence-badge');
@@ -58,9 +73,9 @@ function addUpsellCard(suggestion) {
     
     cardDiv.innerHTML = `
         <div class="upsell-card">
-            <div class="upsell-title">✨ ${suggestion.plan_recomendado.nombre}</div>
-            <div style="font-size: 0.85rem">${suggestion.mensaje_comercial}</div>
-            <div style="font-size: 0.8rem; margin-top: 5px; color: var(--text-muted)">Precio: S/ ${suggestion.plan_recomendado.precio}</div>
+            <div class="upsell-title">✨ ${suggestion.nombre}</div>
+            <div style="font-size: 0.85rem">${suggestion.beneficios || ''}</div>
+            <div style="font-size: 0.8rem; margin-top: 5px; color: var(--text-muted)">Precio: S/ ${suggestion.precio}</div>
             <button class="upsell-button" onclick="alert('¡Plan activado! (Simulación)')">Me interesa</button>
         </div>
     `;
@@ -90,10 +105,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function sendMessage() {
     const text = messageInput.value.trim();
-    if (!text) return;
+    if (!text || !currentUserId) return;
 
-    const userId = userSelect.value;
-    
     // UI Update
     addMessage(text, 'user');
     messageInput.value = '';
@@ -105,7 +118,7 @@ async function sendMessage() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 session_id: sessionId,
-                user_id: userId,
+                user_id: currentUserId,
                 message: text,
                 channel: 'web'
             })

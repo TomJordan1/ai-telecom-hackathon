@@ -219,10 +219,11 @@ def _parece_social_simple(message: str) -> bool:
     evidentes. Solo se usa cuando el LLM no está disponible.
     """
     texto = message.strip().lower()
-    if len(texto.split()) > 4:
+    if len(texto.split()) > 8:
         return False
     return bool(re.search(
         r"\b(hola|hey|buenas|buenos|hi|hello|saludos|gracias|adi[oó]s|chao|chau|bye|"
-        r"hasta luego|nos vemos|ok|vale|listo)\b",
+        r"hasta luego|nos vemos|ok|vale|listo|acuerdas|recuerdas|eres|bot|ia|quien|"
+        r"quién|c[oó]mo|tal|que tal|q tal|ayuda|dime|sabes|puedes)\b",
         texto,
     ))

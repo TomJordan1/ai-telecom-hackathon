@@ -70,6 +70,7 @@ def _generate_mock_response(
     pending_emotions: List[Dict],
     perfil_lexico: Optional[str] = None,
     recommended_plan: Optional[Dict[str, Any]] = None,
+    pending_issue_followup: bool = False,
 ) -> ChatResponse:
     """Fallback if no API key is provided."""
     intent_category = deterministic_payload.get("detected_event", "CONSULTA_GENERAL")
@@ -77,9 +78,24 @@ def _generate_mock_response(
         intent_category = "NUEVO_CLIENTE"
     
     messages = []
-    if pending_emotions:
-        messages.append(MessageChunk(text="Por cierto, entiendo tu preocupación anterior y estoy aquí para aclarar todo detalle 😊.", type="hook", delay_ms=0))
-    else:
+    
+    # 1. Seguimiento de pendientes (Follow-up)
+    if pending_issue_followup:
+        messages.append(MessageChunk(text="Antes de revisar lo de hoy, vi que tu consulta anterior quedó pendiente. ¿Lograron solucionarlo?", type="hook", delay_ms=0))
+    # 2. Alertas proactivas
+    upcoming_alerts_list = deterministic_payload.get("upcoming_alerts") or []
+    if upcoming_alerts_list and not pending_issue_followup:
+        alert = upcoming_alerts_list[0]
+        messages.append(MessageChunk(text=f"Por cierto, noté que tu {alert.get('concepto')} termina el {alert.get('fecha_fin')}. ¡Avisado estás! Ahora, sobre tu consulta...", type="hook", delay_ms=0))
+    elif pending_emotions and not pending_issue_followup:
+        # 3. Empatía por dudar de IA (ejemplo)
+        # Check if it's an AI doubt emotion
+        em_text = " ".join([e.get("text", "") for e in pending_emotions])
+        if "bot" in em_text or "humano" in em_text:
+            messages.append(MessageChunk(text="Entiendo tus dudas sobre hablar con un asistente virtual, pero te aseguro que tengo acceso directo a tu facturación para ayudarte con precisión.", type="hook", delay_ms=0))
+        else:
+            messages.append(MessageChunk(text="Por cierto, entiendo tu preocupación anterior y estoy aquí para aclarar todo detalle 😊.", type="hook", delay_ms=0))
+    elif not pending_issue_followup and not upcoming_alerts_list:
         messages.append(MessageChunk(text="¡Hola! Soy Lucía. He analizado tus recibos al detalle para explicarte qué pasó.", type="hook", delay_ms=0))
             
     delta = deterministic_payload.get('variation_amount', 0)
@@ -105,10 +121,14 @@ def _generate_mock_response(
             mensaje_comercial=f"Dato curioso: Lucía encontró el plan {recommended_plan['nombre']} que podría convenirte más. ¿Te ayudo a activarlo?",
             plan_recomendado=RecommendedPlan(**recommended_plan)
         )
+    elif not cross_sell_eligible and intent_category != "BLOQUEO_COMPLIANCE":
+        # Efecto efervescente en MOCK
+        plan_actual = deterministic_payload.get('plan_actual', 'tu plan actual')
+        messages.append(MessageChunk(text=f"Recuerda que con {plan_actual} tienes grandes beneficios para seguir disfrutando. ¡Cualquier otra duda, aquí estoy!", type="explanation", delay_ms=1000))
         
     historial = [BillSummary(month=pb['month'], amount=pb['amount']) for pb in deterministic_payload.get('previous_bills', [])]
 
-    upcoming_alerts = [UpcomingAlert(**a) for a in (deterministic_payload.get("upcoming_alerts") or [])]
+    upcoming_alerts = [UpcomingAlert(**a) for a in upcoming_alerts_list]
 
     return ChatResponse(
         session_id=session_id,
@@ -134,6 +154,7 @@ def generate_response(
     perfil_lexico: Optional[str] = None,
     historial_conversacion: Optional[List[Dict[str, Any]]] = None,
     recommended_plan: Optional[Dict[str, Any]] = None,
+    pending_issue_followup: bool = False,
 ) -> ChatResponse:
     """
     Simula la generación de lenguaje por el LLM o usa LangChain real con DeepSeek 
@@ -169,6 +190,10 @@ def generate_response(
         HISTORIAL RECIENTE DE LA CONVERSACIÓN:
         {historial_conversacion}
 
+        SEGUIMIENTO DE CASOS PENDIENTES: {pending_issue_followup}
+        (Si es True, el usuario tuvo un problema que quedó sin resolver en el pasado. 
+        Empieza tu respuesta preguntando proactivamente si lograron solucionarlo o cómo le fue con eso, antes de atender su consulta actual).
+
         {format_instructions}
         
         INFORMACIÓN DETERMINISTA (Verdad absoluta, no la modifiques):
@@ -188,13 +213,20 @@ def generate_response(
         Si no es elegible (False) o el plan recomendado verificado es null,
         'plan_optimizer_suggestion.available' DEBE ser False y no debes mencionar ningún plan.
 
+        EFECTO EFERVESCENTE (MUY IMPORTANTE):
+        Si la consulta o queja actual se ha resuelto positivamente y NO hay venta cruzada,
+        cierra tu explicación recordando de forma natural y proactiva los beneficios actuales de su plan 
+        (que figura en el Deterministic Payload). Haz que el usuario recuerde lo bueno de su plan.
+
         ALERTAS PROACTIVAS VERIFICADAS (si la lista no está vacía, menciona la más próxima a
         vencer de forma proactiva y amable; si está vacía, no inventes ninguna alerta):
         {upcoming_alerts}
         
         EMOCIONES PENDIENTES DEL USUARIO:
         {pending_emotions}
-        (Si hay emociones aquí, asegúrate de referenciarlas sutilmente en tus mensajes).
+        (Si hay emociones de duda o miedo hacia la IA como "no creo que un bot pueda ayudarme",
+        responde de manera muy empática y transparente, explicando amablemente que tú sí tienes acceso
+        preciso a sus recibos y que puedes ayudarle).
 
         REGISTRO LINGÜÍSTICO DEL USUARIO: {perfil_lexico}
         {instruccion_perfil}
@@ -222,6 +254,7 @@ def generate_response(
                 "perfil_lexico": persona.normalizar_perfil(perfil_lexico),
                 "instruccion_perfil": persona.instruccion_registro(perfil_lexico),
                 "historial_conversacion": _formatear_historial(historial_conversacion),
+                "pending_issue_followup": "True" if pending_issue_followup else "False",
                 "session_id": session_id,
                 "user_message": user_message
             })
@@ -246,13 +279,13 @@ def generate_response(
             print(f"Error con LLM DeepSeek: {e}. Fallback a Mock.")
             return _generate_mock_response(
                 session_id, user_message, deterministic_payload, rag_context,
-                cross_sell_eligible, pending_emotions, perfil_lexico, recommended_plan
+                cross_sell_eligible, pending_emotions, perfil_lexico, recommended_plan, pending_issue_followup
             )
     else:
         # Usar el mock por defecto si no hay API KEY
         return _generate_mock_response(
             session_id, user_message, deterministic_payload, rag_context,
-            cross_sell_eligible, pending_emotions, perfil_lexico, recommended_plan
+            cross_sell_eligible, pending_emotions, perfil_lexico, recommended_plan, pending_issue_followup
         )
 
 

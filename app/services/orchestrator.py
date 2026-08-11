@@ -138,6 +138,12 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     comentarios = historial.comentarios_emocionales or []
     pending_emotions = [e for e in comentarios if not e.get("referenciado", False)]
     historial_conversacion = historial.historial_conversacion or []
+    
+    # Seguimiento de pendientes: si el último caso quedó sin resolver y la sesión se 
+    # retomó (lo sabemos si hay historial previo), marcamos la alerta para el LLM.
+    pending_issue_followup = False
+    if historial.estado_resolucion is False and len(historial_conversacion) > 0:
+        pending_issue_followup = True
 
     # Paso 2: Pre-filtro de Compliance (Regex, antes de cualquier IA)
     blocked_message = validate_compliance(request.message, db)
@@ -335,6 +341,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         perfil_lexico=perfil_lexico,
         historial_conversacion=historial_conversacion,
         recommended_plan=recommended_plan,
+        pending_issue_followup=pending_issue_followup,
     )
 
     # Adjuntar el confidence_score (inverso de incertidumbre)
