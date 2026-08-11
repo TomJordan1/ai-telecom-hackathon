@@ -18,7 +18,7 @@ from app.services.llm import generate_response
 from app.services.case_matcher import match_caso
 from app.services.uncertainty_calculator import calculate_uncertainty, requires_handoff
 from app.services.feedback_handler import register_new_case
-from app.services.intent_classifier import route
+from app.services.intent_classifier import route, PATRONES_SENSIBLES, has_billing_signals
 from app.services import persona
 from app.core.schemas import ChatRequest, ChatResponse, MessageChunk, PersonalityMetadata
 
@@ -257,6 +257,54 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         _registrar_auditoria(
             db, request.session_id, started_at, response.intent_category, components_invoked,
             compliance_triggered=True, confidence_score=response.confidence_score,
+        )
+        return _finalizar(db, request, response)
+
+    # Continuidad de derivación sensible: si el último turno de Lucía ya derivó
+    # por cancelación/portabilidad/nueva línea, un mensaje corto de seguimiento
+    # ("para mí", "sí", "ok") no debe reclasificarse desde cero. Sin este check,
+    # ese turno caía al pipeline de facturación (porque no repite las palabras
+    # clave del patrón sensible) y el LLM real volvía a improvisar el proceso
+    # comercial completo (pedir DNI, preguntar plan, etc.) en vez de simplemente
+    # confirmar que ya está siendo gestionado por un asesor.
+    #
+    # IMPORTANTE: se acota a la MISMA sesión activa (< 30 min de inactividad),
+    # igual que pending_issue_followup. El historial se vincula por user_id
+    # (memoria de largo plazo), así que sin este límite un usuario que vuelve
+    # días después con un mensaje sin señales de facturación quedaría atrapado
+    # repitiendo la respuesta de una solicitud sensible ya vieja y resuelta.
+    sesion_activa = bool(
+        ultima_actividad_previa
+        and (datetime.utcnow() - ultima_actividad_previa).total_seconds() / 60 < UMBRAL_SESION_RETOMADA_MINUTOS
+    )
+    ultimo_turno_lucia = next(
+        (t for t in reversed(historial_conversacion) if t.get("role") == "lucia"), None
+    )
+    patron_en_gestion = (
+        ultimo_turno_lucia.get("intent") if ultimo_turno_lucia else None
+    )
+    if sesion_activa and patron_en_gestion in PATRONES_SENSIBLES and not has_billing_signals(request.message):
+        response = ChatResponse(
+            session_id=request.session_id,
+            intent_category=patron_en_gestion,
+            sentiment_score=historial.score_sentimiento,
+            requires_human_intervention=True,
+            confidence_score=95,
+            messages=[
+                MessageChunk(
+                    text="Ya quedó registrada tu solicitud y un asesor la está gestionando "
+                         "con la información que me compartiste. En cuanto tenga novedades "
+                         "te aviso, o si prefieres puedo derivarte ahora mismo. 🙏",
+                    type="explanation",
+                )
+            ],
+            personality_metadata=PersonalityMetadata(
+                lucia_tone=persona.tono_para_metadata(historial.perfil_lexico_usuario)
+            ),
+        )
+        _registrar_auditoria(
+            db, request.session_id, started_at, response.intent_category, ["compliance_filter", "continuidad_sensible"],
+            requires_human_intervention=True, confidence_score=response.confidence_score,
         )
         return _finalizar(db, request, response)
 

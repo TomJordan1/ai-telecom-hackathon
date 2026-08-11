@@ -48,21 +48,25 @@ _BILLING_PATTERNS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Solicitudes estructurales sensibles (cancelación, portabilidad, etc.)
+# Solicitudes estructurales sensibles (bajas: cancelación, portabilidad;
+# altas: nueva línea, nuevo servicio)
 # ---------------------------------------------------------------------------
 # Estas NO son variaciones de recibo: el motor determinista no puede detectarlas
-# (no hay ningún cálculo de ΔM que explique "quiero cancelar mi plan") y el RAG
-# de políticas de facturación tampoco las cubre. Si se dejaran caer al pipeline
-# de facturación, el LLM terminaría improvisando el proceso con su conocimiento
-# general — justo la alucinación que el resto del diseño evita para montos y
-# fechas, pero sin blindaje para procesos.
+# (no hay ningún cálculo de ΔM que explique "quiero cancelar mi plan" ni "quiero
+# abrir otra línea") y el RAG de políticas de facturación tampoco las cubre.
+# Si se dejaran caer al pipeline de facturación o al conversacional genérico,
+# el LLM terminaría improvisando el proceso comercial completo con su
+# conocimiento general (qué preguntar, qué ofrecer, cómo tramitarlo) — la misma
+# alucinación que el resto del diseño evita para montos y fechas, pero sin
+# blindaje para procesos ni ofertas comerciales no verificadas.
 #
 # Se evalúan con la MÁXIMA prioridad (antes que facturación y que el handoff
 # genérico) para que cada patrón quede etiquetado con su propia categoría y
 # pueda entrar al mismo ciclo de aprendizaje supervisado (cuarentena -> agente
 # valida -> base_casos -> reutilización) que ya existe para eventos de
-# facturación. Sin este paso, "cancelar mi plan" contiene la palabra "plan" y
-# quedaría atrapado explicando la variación del recibo en vez de derivar.
+# facturación. Sin este paso, "cancelar mi plan" o "abrir otra línea" contienen
+# vocabulario de facturación ("plan", "línea") y quedarían atrapados en el
+# pipeline equivocado en vez de derivar a un agente comercial real.
 
 _SOLICITUD_SENSIBLE_PATRONES: Dict[str, List[str]] = {
     "CANCELACION_PLAN": [
@@ -79,7 +83,21 @@ _SOLICITUD_SENSIBLE_PATRONES: Dict[str, List[str]] = {
         r"\bcambiar(me)?\s+de\s+operador\b",
         r"\bmigrar\s+a\s+otra\s+(compa[ñn][ií]a|operadora)\b",
     ],
+    "NUEVA_LINEA": [
+        r"\babrir\s+(otra|una|otra\s+m[aá]s|nueva)?\s*l[ií]nea\b",
+        r"\b(adquirir|contratar|sacar|activar)\s+(otra|una)?\s*l[ií]nea\s+(nueva|adicional)?\b",
+        r"\bl[ií]nea\s+(nueva|adicional)\b",
+        r"\bnuevo\s+plan\s+adicional\b",
+        r"\bcontratar\s+(un\s+)?nuevo\s+servicio\b",
+        r"\bagregar\s+una\s+l[ií]nea\b",
+    ],
 }
+
+
+# Expuesto para que el orquestador pueda detectar continuidad: si el turno
+# anterior de Lucía ya derivó por uno de estos patrones, un mensaje corto de
+# seguimiento ("para mí", "sí", "ok") no debe volver a clasificarse desde cero.
+PATRONES_SENSIBLES = frozenset(_SOLICITUD_SENSIBLE_PATRONES.keys())
 
 
 def detectar_solicitud_sensible(message: str) -> Optional[str]:
