@@ -122,6 +122,73 @@ def _finalizar(db: Session, request: ChatRequest, response: ChatResponse) -> Cha
     return response
 
 
+def _tipo_consulta_directa(message: str) -> Optional[str]:
+    """Identifica consultas que se responden solo con hechos del recibo actual."""
+    texto = message.lower()
+    if any(termino in texto for termino in ("deuda", "deudas", "saldo pendiente", "pendiente de pago")):
+        return "DEUDA"
+    if "plan actual" in texto or "mi plan" in texto or "qué plan tengo" in texto or "que plan tengo" in texto:
+        return "PLAN_ACTUAL"
+    return None
+
+
+def _respuesta_consulta_directa(
+    request: ChatRequest,
+    fact_payload: Dict[str, Any],
+    perfil_lexico: str,
+    confidence_score: int,
+) -> Optional[ChatResponse]:
+    """
+    Responde consultas de deuda y plan desde campos verificados del recibo.
+    No delega estos hechos al LLM y nunca infiere saldo o plan ausente.
+    """
+    consulta = _tipo_consulta_directa(request.message)
+    if consulta == "DEUDA":
+        estado_deuda = fact_payload.get("estado_deuda")
+        if estado_deuda:
+            periodo = estado_deuda.get("periodo") or fact_payload["current_bill"]["issue_date"]
+            if estado_deuda.get("estado") == "SIN_DEUDA":
+                texto = f"Según tu factura del período {periodo}, no registras deuda pendiente."
+            else:
+                texto = (
+                    f"Según tu factura del período {periodo}, el estado de deuda registrado es: "
+                    f"{estado_deuda.get('valor')}."
+                )
+        else:
+            texto = "Tu recibo disponible no informa un estado de deuda verificable, así que no puedo confirmar un saldo pendiente."
+
+        return ChatResponse(
+            session_id=request.session_id,
+            intent_category="CONSULTA_DEUDA",
+            sentiment_score=3,
+            confidence_score=confidence_score,
+            messages=[MessageChunk(text=texto, type="explanation")],
+            personality_metadata=PersonalityMetadata(
+                lucia_tone=persona.tono_para_metadata(perfil_lexico)
+            ),
+        )
+
+    if consulta == "PLAN_ACTUAL":
+        plan_actual = fact_payload.get("plan_actual")
+        if plan_actual:
+            texto = f"El plan identificado en tu recibo actual es: {plan_actual}."
+        else:
+            texto = "Tu recibo disponible no permite identificar con certeza el nombre de tu plan actual."
+
+        return ChatResponse(
+            session_id=request.session_id,
+            intent_category="CONSULTA_PLAN_ACTUAL",
+            sentiment_score=3,
+            confidence_score=confidence_score,
+            messages=[MessageChunk(text=texto, type="explanation")],
+            personality_metadata=PersonalityMetadata(
+                lucia_tone=persona.tono_para_metadata(perfil_lexico)
+            ),
+        )
+
+    return None
+
+
 def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     """
     Orquesta el ciclo completo de vida de la petición.
@@ -296,6 +363,37 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             evidence=fact_payload.get("evidence"), handoff_context=response.handoff_context,
         )
         return _finalizar(db, request, response)
+
+    # Consultas puntuales sobre deuda y plan: se responden directamente con
+    # campos verificados del recibo, antes de consultar RAG o el LLM.
+    # La derivación por ausencia de recibos ya ocurrió arriba, así que esta
+    # rama nunca oculta falta de datos con una respuesta inventada.
+    respuesta_directa = _respuesta_consulta_directa(
+        request=request,
+        fact_payload=fact_payload,
+        perfil_lexico=perfil_lexico,
+        confidence_score=int((1 - uncertainty_score) * 100),
+    )
+    if respuesta_directa:
+        components_invoked.append("verified_account_lookup")
+        campo_verificado = (
+            bool(fact_payload.get("estado_deuda"))
+            if respuesta_directa.intent_category == "CONSULTA_DEUDA"
+            else bool(fact_payload.get("plan_actual"))
+        )
+        crud.update_historial(
+            db,
+            request.session_id,
+            {"estado_resolucion": campo_verificado},
+        )
+        _registrar_auditoria(
+            db, request.session_id, started_at, respuesta_directa.intent_category, components_invoked,
+            detected_event=fact_payload.get("detected_event"),
+            confidence_score=respuesta_directa.confidence_score,
+            uncertainty_score=uncertainty_score,
+            evidence=fact_payload.get("evidence"),
+        )
+        return _finalizar(db, request, respuesta_directa)
 
     # Paso 4: Búsqueda de Conocimiento (RAG) — solo si no hay caso conocido
     if not caso_match:

@@ -212,42 +212,72 @@ def _inferir_plan_desde_cargos(cargos: List[Dict]) -> Optional[str]:
     return None
 
 
+def _obtener_estado_deuda(conceptos_facturados: Optional[Dict]) -> Optional[Dict[str, str]]:
+    """
+    Extrae el estado de deuda que viene explícitamente en el CSV.
+
+    No convierte texto ambiguo en un monto ni asume que la ausencia del campo
+    significa saldo cero. Solo expone el valor verificable y el período de la
+    factura para poder responder consultas de deuda sin inventar información.
+    """
+    info_factura = (conceptos_facturados or {}).get("info_factura", {})
+    valor = str(info_factura.get("DEUDA", "")).strip()
+    if not valor or valor.lower() in {"nan", "none", "null"}:
+        return None
+
+    sin_deuda = valor.upper() in {"SIN DEUDA", "NO TIENE DEUDA", "NO REGISTRA DEUDA"}
+    return {
+        "valor": valor,
+        "estado": "SIN_DEUDA" if sin_deuda else "REPORTADA",
+        "periodo": str(info_factura.get("PERIOD_END_DATE", "")).strip(),
+    }
+
+
 def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
     """
     Calcula variaciones (Delta M) y genera el Deterministic Fact Payload.
     Soporta tanto el formato de datos reales (CSV) como el formato legacy (mock).
     """
     recibos = crud.get_recibos_by_user(db, user_id, limit=HORIZONTE_RECIBOS)
-    
+
     if not recibos:
         return {"error": "No hay recibos para este usuario."}
-    
+
     current_bill = recibos[0]
     recibos_previos = recibos[1:]
-    
+    conceptos_actuales = current_bill.conceptos_facturados or {}
+
+    # Estos hechos se extraen antes de evaluar el historial para que un cliente
+    # con un único recibo también pueda consultar su plan o estado de deuda.
+    plan_actual = current_bill.plan_actual
+    if not plan_actual and not _es_formato_legacy(conceptos_actuales):
+        plan_actual = _inferir_plan_desde_cargos(_extraer_cargos(conceptos_actuales))
+    estado_deuda = _obtener_estado_deuda(conceptos_actuales)
+
     if not recibos_previos:
         # Solo tiene un recibo, no hay historial con qué comparar.
         return {
             "moneda": MONEDA_CODIGO,
             "simbolo_moneda": MONEDA_SIMBOLO,
+            "plan_actual": plan_actual,
+            "estado_deuda": estado_deuda,
             "current_bill": {
                 "amount": current_bill.monto_total,
-                "issue_date": current_bill.mes_emision
+                "issue_date": current_bill.mes_emision,
             },
             "previous_bills": [],
             "variation_amount": 0.0,
             "variation_percentage": 0.0,
             "detected_event": "NUEVO_CLIENTE",
-            "evidence": ["Primer recibo emitido."]
+            "evidence": ["Primer recibo emitido."],
+            "upcoming_alerts": _calculate_upcoming_alerts(current_bill),
         }
-        
+
     previous_bill = recibos_previos[0]
-    
     delta_m = round(current_bill.monto_total - previous_bill.monto_total, 2)
     variation_pct = round((delta_m / previous_bill.monto_total) * 100, 2) if previous_bill.monto_total > 0 else 0
-    
+
     # Detectar el evento causal: elegir lógica según el formato de datos
-    conceptos_actuales = current_bill.conceptos_facturados or {}
     conceptos_pasados = previous_bill.conceptos_facturados or {}
 
     if _es_formato_legacy(conceptos_actuales) or _es_formato_legacy(conceptos_pasados):
@@ -263,18 +293,14 @@ def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
     if patron_recurrente:
         evidence.append(patron_recurrente)
 
-    # Determinar plan_actual: usar el campo del recibo o inferirlo de los cargos
-    plan_actual = current_bill.plan_actual
-    if not plan_actual and not _es_formato_legacy(conceptos_actuales):
-        plan_actual = _inferir_plan_desde_cargos(_extraer_cargos(conceptos_actuales))
-
-    payload = {
+    return {
         "moneda": MONEDA_CODIGO,
         "simbolo_moneda": MONEDA_SIMBOLO,
         "plan_actual": plan_actual,
+        "estado_deuda": estado_deuda,
         "current_bill": {
             "amount": current_bill.monto_total,
-            "issue_date": current_bill.mes_emision
+            "issue_date": current_bill.mes_emision,
         },
         "previous_bills": [
             {"month": r.mes_emision, "amount": r.monto_total}
@@ -284,10 +310,8 @@ def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
         "variation_percentage": variation_pct,
         "detected_event": detected_event,
         "evidence": evidence,
-        "upcoming_alerts": _calculate_upcoming_alerts(current_bill)
+        "upcoming_alerts": _calculate_upcoming_alerts(current_bill),
     }
-    
-    return payload
 
 
 def _detectar_patron_recurrente(detected_event: str, recibos_previos: List[Any]) -> Optional[str]:

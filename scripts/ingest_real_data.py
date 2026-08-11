@@ -6,14 +6,18 @@ No genera datos ficticios, planes aleatorios ni promociones inventadas.
 Para escenarios de demo/testing usar seed_demo.py (separado).
 """
 
+import os
 import sys
 from pathlib import Path
 from datetime import datetime
 
 import pandas as pd
 
-# Agregar raíz del proyecto al path para importar app.*
+# La URL SQLite por defecto es relativa al directorio de trabajo. Forzamos la
+# raíz del proyecto ANTES de importar database para que la ingesta y la app web
+# usen el mismo lucia_brain.db aunque el script se ejecute desde scripts/.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+os.chdir(PROJECT_ROOT)
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.db.database import engine, Base, SessionLocal

@@ -142,7 +142,8 @@ async function sendMessage() {
         // facturación (donde hubo un motor determinista + case matcher de por
         // medio). Turnos conversacionales o bloqueados por compliance no lo muestran.
         const esFacturacion = !data.compliance_triggered
-            && !['SALUDO', 'DESPEDIDA', 'AGRADECIMIENTO', 'FUERA_DE_DOMINIO', 'SOLICITUD_AGENTE']
+            && !['SALUDO', 'DESPEDIDA', 'AGRADECIMIENTO', 'FUERA_DE_DOMINIO', 'SOLICITUD_AGENTE',
+                'CONSULTA_DEUDA', 'CONSULTA_PLAN_ACTUAL']
                 .includes(data.intent_category);
         if (esFacturacion && ultimoMensajeDiv) {
             addConfidenceBadge(ultimoMensajeDiv, data.confidence_score, data.caso_validado);
