@@ -294,3 +294,33 @@ body {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
 }
+
+/* --- Solución editable en cuarentena --- */
+.card-solution {
+    margin-top: 10px;
+}
+
+.solution-label {
+    display: block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.solution-textarea {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 0.85rem;
+    line-height: 1.4;
+    resize: vertical;
+    min-height: 60px;
+}
+
+.solution-textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+}

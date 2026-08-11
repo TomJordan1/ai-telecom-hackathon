@@ -19,6 +19,7 @@ class FeedbackRequest(BaseModel):
 
 class ValidarCasoRequest(BaseModel):
     validado_por: Optional[str] = "AGENTE_MOVISTAR"
+    solucion_editada: Optional[str] = None  # Texto editado por el agente (reemplaza la solucion propuesta)
 
 # --- Endpoints de Feedback ---
 
@@ -71,17 +72,45 @@ def list_cuarentena(db: Session = Depends(get_db)):
                 "feedback_posterior": c.feedback_posterior,
                 "fecha": c.fecha_consulta.isoformat() if c.fecha_consulta else None,
                 "fecha_followup": c.fecha_followup.isoformat() if c.fecha_followup else None,
+                "solucion_propuesta": c.solucion_propuesta,
+                "evidencias": c.evidencias,
             }
             for c in casos
         ]
     }
 
+
+@router.get("/admin/cuarentena/{caso_id}")
+def get_cuarentena_detalle(caso_id: str, db: Session = Depends(get_db)):
+    """Devuelve el detalle completo de un caso en cuarentena para revisión/edición."""
+    caso = crud.get_caso_cuarentena(db, caso_id)
+    if not caso:
+        raise HTTPException(status_code=404, detail="Caso no encontrado")
+    return {
+        "id": caso.id,
+        "patron": caso.patron_detectado,
+        "session_id": caso.session_id,
+        "incertidumbre": caso.incertidumbre_score,
+        "feedback_inmediato": caso.feedback_inmediato,
+        "feedback_posterior": caso.feedback_posterior,
+        "fecha": caso.fecha_consulta.isoformat() if caso.fecha_consulta else None,
+        "solucion_propuesta": caso.solucion_propuesta,
+        "evidencias": caso.evidencias,
+    }
+
+
 @router.post("/admin/validar/{caso_id}")
 def validate_case(caso_id: str, request: ValidarCasoRequest, db: Session = Depends(get_db)):
     """
     Promueve un caso de cuarentena a base_casos (conocimiento validado).
-    Solo accesible por personal de Movistar.
+    Si se provee solucion_editada, reemplaza la solución propuesta antes de promover.
     """
+    if request.solucion_editada is not None:
+        # El agente editó la respuesta: actualizar el caso antes de promoverlo.
+        crud.update_caso_cuarentena(db, caso_id, {
+            "solucion_propuesta": {"texto": request.solucion_editada}
+        })
+
     nuevo_caso = crud.promover_caso_a_base(db, caso_id, request.validado_por)
     if not nuevo_caso:
         raise HTTPException(status_code=404, detail="Caso no encontrado en cuarentena")

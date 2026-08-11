@@ -134,7 +134,13 @@ async function loadCuarentena() {
 
         list.querySelectorAll("[data-validar]").forEach((btn) => {
             btn.addEventListener("click", async () => {
-                await apiPost(`/admin/validar/${btn.dataset.validar}`, { validado_por: "AGENTE_MOVISTAR" });
+                const casoId = btn.dataset.validar;
+                const textarea = document.getElementById(`solucion-${casoId}`);
+                const solucionEditada = textarea ? textarea.value.trim() : null;
+                await apiPost(`/admin/validar/${casoId}`, {
+                    validado_por: "AGENTE_MOVISTAR",
+                    solucion_editada: solucionEditada || null,
+                });
                 showToast("Caso promovido a la base de conocimiento");
                 loadCuarentena();
             });
@@ -145,6 +151,18 @@ async function loadCuarentena() {
 }
 
 function renderCuarentenaCard(caso) {
+    // Extraer texto visible de la solución propuesta
+    let solucionTexto = "";
+    if (caso.solucion_propuesta) {
+        if (typeof caso.solucion_propuesta === "string") {
+            solucionTexto = caso.solucion_propuesta;
+        } else if (caso.solucion_propuesta.texto) {
+            solucionTexto = caso.solucion_propuesta.texto;
+        } else if (caso.solucion_propuesta.messages) {
+            solucionTexto = caso.solucion_propuesta.messages.map(m => m.text).join("\n");
+        }
+    }
+
     return `
     <div class="card">
         <div class="card-title-row">
@@ -157,6 +175,10 @@ function renderCuarentenaCard(caso) {
         <div class="stat-row">
             <span>Feedback inmediato: <strong>${caso.feedback_inmediato}</strong></span>
             <span>Feedback posterior: <strong>${caso.feedback_posterior}</strong></span>
+        </div>
+        <div class="card-solution">
+            <label class="solution-label">Solución propuesta (editable):</label>
+            <textarea class="solution-textarea" id="solucion-${caso.id}" rows="4">${solucionTexto}</textarea>
         </div>
         <div class="card-actions">
             <button class="btn-approve" data-validar="${caso.id}">✓ Validar y promover</button>
