@@ -48,6 +48,53 @@ _BILLING_PATTERNS = [
 ]
 
 # ---------------------------------------------------------------------------
+# Solicitudes estructurales sensibles (cancelación, portabilidad, etc.)
+# ---------------------------------------------------------------------------
+# Estas NO son variaciones de recibo: el motor determinista no puede detectarlas
+# (no hay ningún cálculo de ΔM que explique "quiero cancelar mi plan") y el RAG
+# de políticas de facturación tampoco las cubre. Si se dejaran caer al pipeline
+# de facturación, el LLM terminaría improvisando el proceso con su conocimiento
+# general — justo la alucinación que el resto del diseño evita para montos y
+# fechas, pero sin blindaje para procesos.
+#
+# Se evalúan con la MÁXIMA prioridad (antes que facturación y que el handoff
+# genérico) para que cada patrón quede etiquetado con su propia categoría y
+# pueda entrar al mismo ciclo de aprendizaje supervisado (cuarentena -> agente
+# valida -> base_casos -> reutilización) que ya existe para eventos de
+# facturación. Sin este paso, "cancelar mi plan" contiene la palabra "plan" y
+# quedaría atrapado explicando la variación del recibo en vez de derivar.
+
+_SOLICITUD_SENSIBLE_PATRONES: Dict[str, List[str]] = {
+    "CANCELACION_PLAN": [
+        r"\bcancel(ar|o|aci[oó]n)\b",
+        r"\bdar\s+de\s+baja\b",
+        r"\bbaja\s+(del|de\s+mi)?\s*(plan|servicio|l[ií]nea)\b",
+        r"\bdesactivar\s+(mi\s+)?(plan|l[ií]nea|servicio)\b",
+        r"\bdejar\s+(el\s+)?servicio\b",
+        r"\bterminar\s+(mi\s+)?contrato\b",
+    ],
+    "PORTABILIDAD": [
+        r"\bportabilidad\b",
+        r"\bportar\s+(mi\s+)?(n[uú]mero|l[ií]nea)\b",
+        r"\bcambiar(me)?\s+de\s+operador\b",
+        r"\bmigrar\s+a\s+otra\s+(compa[ñn][ií]a|operadora)\b",
+    ],
+}
+
+
+def detectar_solicitud_sensible(message: str) -> Optional[str]:
+    """
+    ¿El mensaje pide una acción estructural que el motor determinista no puede
+    resolver (cancelación, portabilidad)? Retorna el patrón detectado o None.
+    """
+    texto = message.lower()
+    for patron, patrones_regex in _SOLICITUD_SENSIBLE_PATRONES.items():
+        if any(re.search(p, texto) for p in patrones_regex):
+            return patron
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Solicitud explícita de agente humano (máxima prioridad)
 # ---------------------------------------------------------------------------
 # Es una señal estructural, no de contenido: independientemente del tema, si el
@@ -98,10 +145,11 @@ _FALLBACK_CONVERSACIONAL = (
 @dataclass
 class RoutingDecision:
     """Resultado del enrutamiento de un turno."""
-    intent: str                      # FACTURACION | SOLICITUD_AGENTE | SALUDO | DESPEDIDA | AGRADECIMIENTO | FUERA_DE_DOMINIO
+    intent: str                      # FACTURACION | SOLICITUD_AGENTE | SOLICITUD_SENSIBLE | SALUDO | DESPEDIDA | AGRADECIMIENTO | FUERA_DE_DOMINIO
     perfil_lexico: str               # FORMAL | CASUAL | USO_JERGAS
     respuesta: Optional[str] = None  # Texto ya redactado (solo turnos no-facturación)
     fuente: str = "DETERMINISTA"     # LLM | DETERMINISTA — para observabilidad
+    patron_sensible: Optional[str] = None  # CANCELACION_PLAN | PORTABILIDAD — clave para cuarentena/base_casos
 
     @property
     def es_facturacion(self) -> bool:
@@ -110,6 +158,10 @@ class RoutingDecision:
     @property
     def es_solicitud_agente(self) -> bool:
         return self.intent == "SOLICITUD_AGENTE"
+
+    @property
+    def es_solicitud_sensible(self) -> bool:
+        return self.intent == "SOLICITUD_SENSIBLE"
 
 
 def has_billing_signals(message: str) -> bool:
@@ -154,7 +206,20 @@ def route(
     Para turnos conversacionales la respuesta ya viene redactada por el LLM, con la
     personalidad de Lucía y adaptada al registro del usuario.
     """
-    # 1. Máxima prioridad: solicitud explícita de agente humano.
+    # 1. Máxima prioridad absoluta: solicitudes estructurales sensibles
+    #    (cancelación, portabilidad). Van ANTES que el handoff genérico y que
+    #    facturación: "cancelar mi plan" contiene "plan" y quedaría atrapado
+    #    explicando la variación del recibo si no se detecta aquí primero.
+    patron_sensible = detectar_solicitud_sensible(message)
+    if patron_sensible:
+        return RoutingDecision(
+            intent="SOLICITUD_SENSIBLE",
+            perfil_lexico=detectar_perfil_lexico_heuristico(message, perfil_previo),
+            fuente="DETERMINISTA",
+            patron_sensible=patron_sensible,
+        )
+
+    # 2. Solicitud explícita de agente humano.
     #    Va antes que facturación: "pásame con un asesor sobre mi plan" no debe
     #    quedar atrapado explicando el recibo otra vez.
     if has_handoff_signals(message):
@@ -164,7 +229,7 @@ def route(
             fuente="DETERMINISTA",
         )
 
-    # 2. Camino rápido: señales claras de facturación → sin llamada extra al modelo.
+    # 3. Camino rápido: señales claras de facturación → sin llamada extra al modelo.
     if has_billing_signals(message):
         return RoutingDecision(
             intent="FACTURACION",
@@ -172,7 +237,7 @@ def route(
             fuente="DETERMINISTA",
         )
 
-    # 3. Sin señales claras (o mensaje corto ambiguo): decide el LLM, que ve el
+    # 4. Sin señales claras (o mensaje corto ambiguo): decide el LLM, que ve el
     #    historial reciente y entiende jerga, ironía y contexto.
     resultado = llm_service.classify_and_reply(
         user_message=message,

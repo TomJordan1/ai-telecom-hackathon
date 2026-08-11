@@ -124,16 +124,15 @@ def _finalizar(db: Session, request: ChatRequest, response: ChatResponse) -> Cha
 
 
 def _tipo_consulta_directa(message: str) -> Optional[str]:
-    """Identifica consultas que se responden solo con hechos del recibo actual."""
+    """
+    Identifica consultas que se responden solo con hechos del recibo actual.
+
+    Nota: no hace falta excluir aquí "cancelar mi plan" ni similares — esas
+    frases ya se capturan antes en intent_classifier.route() como
+    SOLICITUD_SENSIBLE (máxima prioridad) y nunca llegan a este punto del
+    pipeline de facturación.
+    """
     texto = message.lower()
-
-    # Señales de intención distinta a "consultar" (cancelar, cambiar, portar):
-    # sin este filtro, "cómo cancelo mi plan" se confundía con "¿cuál es mi
-    # plan?" porque ambas contienen la substring "mi plan".
-    _OTRA_INTENCION = ("cancel", "portar", "cambiar de plan", "dar de baja", "baja de plan")
-    if any(termino in texto for termino in _OTRA_INTENCION):
-        return None
-
     if any(termino in texto for termino in ("deuda", "deudas", "saldo pendiente", "pendiente de pago")):
         return "DEUDA"
     if "plan actual" in texto or "mi plan" in texto or "qué plan tengo" in texto or "que plan tengo" in texto:
@@ -286,6 +285,92 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     if comentario_detectado:
         crud.add_comentario_emocional(db, request.session_id, comentario_detectado)
 
+    # Solicitud estructural sensible (cancelación, portabilidad): entra al MISMO
+    # ciclo de aprendizaje supervisado que los eventos de facturación, en vez de
+    # dejar que el LLM improvise un proceso no verificado.
+    #
+    # 1. Si ya hay una solución validada en base_casos para este patrón
+    #    (un agente aprobó "CANCELACION_PLAN" antes), se reutiliza — confianza
+    #    alta, sin derivar de nuevo.
+    # 2. Si no, se deriva a un humano Y se registra en cuarentena con ese
+    #    patrón. Así, cuando un agente la valide desde el panel, la próxima
+    #    consulta de cancelación ya no vuelve a derivar.
+    if decision.es_solicitud_sensible:
+        components_invoked.append("case_matcher_sensible")
+        caso_sensible = crud.get_caso_conocido(db, decision.patron_sensible)
+
+        if caso_sensible:
+            crud.increment_caso_aplicado(db, caso_sensible.id)
+            solucion = caso_sensible.solucion_estructurada or {}
+            texto = solucion.get("texto") or (
+                "Ya tengo el proceso verificado para esto. Un asesor lo revisará "
+                "contigo para completarlo con tus datos. 🙏"
+            )
+            response = ChatResponse(
+                session_id=request.session_id,
+                intent_category=decision.patron_sensible,
+                sentiment_score=historial.score_sentimiento,
+                requires_human_intervention=True,
+                confidence_score=99,
+                caso_validado=True,
+                messages=[MessageChunk(text=texto, type="explanation")],
+                personality_metadata=PersonalityMetadata(
+                    lucia_tone=persona.tono_para_metadata(perfil_lexico)
+                ),
+                handoff_context=_build_handoff_context(
+                    request, historial, historial_conversacion,
+                    motivo=f"SOLICITUD_SENSIBLE_{decision.patron_sensible}"
+                ),
+            )
+            _registrar_auditoria(
+                db, request.session_id, started_at, response.intent_category, components_invoked,
+                detected_event=decision.patron_sensible, requires_human_intervention=True,
+                confidence_score=response.confidence_score, handoff_context=response.handoff_context,
+            )
+            return _finalizar(db, request, response)
+
+        # Caso nuevo: se deriva Y se registra en cuarentena para que un agente
+        # lo valide y quede disponible para la próxima consulta similar.
+        response = ChatResponse(
+            session_id=request.session_id,
+            intent_category=decision.patron_sensible,
+            sentiment_score=historial.score_sentimiento,
+            requires_human_intervention=True,
+            confidence_score=80,
+            caso_validado=False,
+            messages=[
+                MessageChunk(
+                    text="Entiendo tu solicitud. Este tipo de trámite requiere verificación "
+                         "adicional, así que te voy a comunicar con un asesor que lo gestione "
+                         "contigo directamente. 🙏",
+                    type="explanation",
+                )
+            ],
+            personality_metadata=PersonalityMetadata(
+                lucia_tone=persona.tono_para_metadata(perfil_lexico)
+            ),
+            handoff_context=_build_handoff_context(
+                request, historial, historial_conversacion,
+                motivo=f"SOLICITUD_SENSIBLE_{decision.patron_sensible}"
+            ),
+        )
+        register_new_case(
+            db=db,
+            session_id=request.session_id,
+            fact_payload={"detected_event": decision.patron_sensible, "origen": "SOLICITUD_SENSIBLE"},
+            solucion_propuesta={
+                "intent_category": decision.patron_sensible,
+                "messages": [m.model_dump() for m in response.messages],
+            },
+            uncertainty_score=0.5,
+        )
+        _registrar_auditoria(
+            db, request.session_id, started_at, response.intent_category, components_invoked,
+            detected_event=decision.patron_sensible, requires_human_intervention=True,
+            confidence_score=response.confidence_score, handoff_context=response.handoff_context,
+        )
+        return _finalizar(db, request, response)
+
     # Solicitud explícita de agente humano: máxima prioridad, no se improvisa
     # ni se re-explica facturación. Se deriva de inmediato con contexto completo.
     if decision.es_solicitud_agente:
@@ -389,6 +474,22 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
                 motivo="INCERTIDUMBRE_ALTA", fact_payload=fact_payload
             ),
         )
+        # Sin este registro, cualquier caso que derivara por incertidumbre alta
+        # (justo los casos genuinamente difíciles) desaparecía sin dejar rastro
+        # en el panel de cuarentena. No hay ciclo de aprendizaje si el caso más
+        # necesitado de revisión humana nunca llega a la cola de validación.
+        if not caso_match:
+            solucion_serializada = {
+                "intent_category": response.intent_category,
+                "messages": [m.model_dump() for m in response.messages],
+            }
+            register_new_case(
+                db=db,
+                session_id=request.session_id,
+                fact_payload=fact_payload,
+                solucion_propuesta=solucion_serializada,
+                uncertainty_score=uncertainty_score,
+            )
         _registrar_auditoria(
             db, request.session_id, started_at, response.intent_category, components_invoked,
             detected_event=fact_payload.get("detected_event"), requires_human_intervention=True,
