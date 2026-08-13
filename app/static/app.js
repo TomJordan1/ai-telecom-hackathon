@@ -286,17 +286,8 @@ function addUserMessage(text) {
     return wrap;
 }
 
-function addConfidenceBadge(parentWrap, confidenceScore, casoValidado) {
-    const badge = document.createElement('div');
-    badge.className = `confidence-badge ${casoValidado ? 'validated' : 'learning'}`;
-    badge.innerHTML = casoValidado
-        ? `Caso validado · Confianza ${confidenceScore}%`
-        : `Caso en aprendizaje · Confianza ${confidenceScore}%`;
-    parentWrap.appendChild(badge);
-    scrollToBottom();
-}
-
 function addFeedbackButtons(parentWrap) {
+
     const bar = document.createElement('div');
     bar.className = 'feedback-bar';
     bar.innerHTML = `
@@ -439,19 +430,10 @@ async function sendMessage() {
             ultimoWrap = addBotMessage(msg.text, msg.type);
         }
 
-        // Si se evaluó facturación, mostrar badge de confianza y feedback
-        const esFacturacion = !data.compliance_triggered
-            && !['SALUDO', 'DESPEDIDA', 'AGRADECIMIENTO', 'FUERA_DE_DOMINIO', 'SOLICITUD_AGENTE',
-                'CONSULTA_DEUDA', 'CONSULTA_PLAN_ACTUAL', 'CONSULTA_GENERAL_PLANES', 'CONSULTA_SIN_CUENTA']
-                .includes(data.intent_category);
-
-        if (esFacturacion && ultimoWrap) {
-            addConfidenceBadge(ultimoWrap, data.confidence_score, data.caso_validado);
-        }
-
         if (ultimoWrap) {
             addFeedbackButtons(ultimoWrap);
         }
+
 
         if (data.plan_optimizer_suggestion && data.plan_optimizer_suggestion.available) {
             await sleep(500);
