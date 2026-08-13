@@ -5,6 +5,7 @@
 const messagesContainer = document.getElementById('chat-messages');
 const messageInput = document.getElementById('message-input');
 const sendButton = document.getElementById('send-button');
+const sessionBadgeText = document.getElementById('session-badge-text');
 const sessionBadge = document.getElementById('session-badge');
 const quickChipsContainer = document.getElementById('quick-chips');
 
@@ -25,10 +26,10 @@ function isVisitor() {
 
 function updateBadge() {
     if (isVisitor()) {
-        sessionBadge.textContent = '👤 Visitante';
+        sessionBadgeText.textContent = 'Visitante';
         sessionBadge.className = 'session-badge';
     } else {
-        sessionBadge.textContent = `📱 Cuenta: ${currentUserId}`;
+        sessionBadgeText.textContent = `Cuenta: ${currentUserId}`;
         sessionBadge.className = 'session-badge client';
     }
 }
@@ -48,28 +49,43 @@ function renderWelcomeFlow() {
         "Para comenzar: **¿tienes un número de cuenta de Movistar o deseas hacer una consulta libre como visitante?**"
     );
 
-    // 2. Opciones interactivas directamente en el chat
+    // 2. Opciones interactivas directamente en el chat con iconos conversacionales
     const choicesDiv = document.createElement('div');
     choicesDiv.className = 'choice-container';
     choicesDiv.id = 'welcome-choices';
 
     choicesDiv.innerHTML = `
         <button class="btn-choice primary" id="btn-choice-cliente">
-            <span style="font-size:1.2rem;">📱</span>
+            <div class="choice-icon">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                    <polyline points="9 11 12 14 22 4"></polyline>
+                </svg>
+            </div>
             <div>
                 <strong>Sí, tengo mi número de cuenta</strong>
                 <span class="choice-desc">Ingresar cuenta y consultar mi recibo</span>
             </div>
         </button>
         <button class="btn-choice" id="btn-choice-visitante">
-            <span style="font-size:1.2rem;">🌟</span>
+            <div class="choice-icon">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+                    <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                </svg>
+            </div>
             <div>
                 <strong>No soy cliente (Consulta libre)</strong>
                 <span class="choice-desc">Ver planes de fibra, móviles y políticas</span>
             </div>
         </button>
         <button class="btn-choice" id="btn-choice-demo">
-            <span style="font-size:1.2rem;">⚡</span>
+            <div class="choice-icon">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                </svg>
+            </div>
             <div>
                 <strong>Probar cuenta demo</strong>
                 <span class="choice-desc">Evaluar escenarios de facturación con 1 clic</span>
@@ -93,7 +109,7 @@ function renderWelcomeFlow() {
             messageInput.placeholder = "Escribe tu número de cuenta (ej. 102968745)...";
             messageInput.focus();
             setQuickChips(['103692188', '302207847', '760000053']);
-        }, 400);
+        }, 350);
     });
 
     document.getElementById('btn-choice-visitante').addEventListener('click', () => {
@@ -109,7 +125,7 @@ function renderWelcomeFlow() {
             messageInput.placeholder = "Pregunta sobre planes, fibra o cómo contratar...";
             messageInput.focus();
             renderVisitorChips();
-        }, 400);
+        }, 350);
     });
 
     document.getElementById('btn-choice-demo').addEventListener('click', () => {
@@ -120,7 +136,7 @@ function renderWelcomeFlow() {
             hideTyping();
             addBotMessage("Elige uno de los escenarios de prueba del desafío:");
             renderScenarioChoices();
-        }, 400);
+        }, 350);
     });
 }
 
@@ -130,9 +146,15 @@ function renderScenarioChoices() {
     grid.id = 'scenario-choices';
 
     grid.innerHTML = `
-        <button class="btn-scenario-pill" data-acc="103692188">🔹 Cuenta 103692188 (Fin de Promoción 10GB)</button>
-        <button class="btn-scenario-pill" data-acc="302207847">🔹 Cuenta 302207847 (Fin Descuento 30GB)</button>
-        <button class="btn-scenario-pill" data-acc="760000053">🔹 Cuenta 760000053 (Renta Adelantada 125GB)</button>
+        <button class="btn-scenario-pill" data-acc="103692188">
+            <span style="color:#3b82f6;">●</span> Cuenta 103692188 (Fin de Promoción 10GB)
+        </button>
+        <button class="btn-scenario-pill" data-acc="302207847">
+            <span style="color:#10b981;">●</span> Cuenta 302207847 (Fin Descuento 30GB)
+        </button>
+        <button class="btn-scenario-pill" data-acc="760000053">
+            <span style="color:#f59e0b;">●</span> Cuenta 760000053 (Renta Adelantada 125GB)
+        </button>
     `;
 
     messagesContainer.appendChild(grid);
@@ -149,7 +171,7 @@ function renderScenarioChoices() {
                 hideTyping();
                 addBotMessage(`¡Cuenta **${acc}** vinculada con éxito! 🎉 Puedes preguntarme por qué varió tu recibo o solicitar el desglose de cargos.`);
                 renderClientChips();
-            }, 400);
+            }, 350);
         });
     });
 }
@@ -172,19 +194,19 @@ function setClientAccount(acc) {
 
 function renderVisitorChips() {
     setQuickChips([
-        '¿Qué planes de fibra óptica tienen?',
-        '¿Cómo funciona la facturación Movistar?',
-        'Planes móviles disponibles',
-        'Tengo una cuenta para consultar'
+        '🌐 Planes de fibra óptica',
+        '📄 ¿Cómo funciona la facturación?',
+        '📱 Planes móviles disponibles',
+        '🔑 Tengo una cuenta para consultar'
     ]);
 }
 
 function renderClientChips() {
     setQuickChips([
-        '¿Por qué subió mi recibo?',
-        '¿Qué me están cobrando este mes?',
-        '¿Qué plan tengo contratado?',
-        '¿Cuándo vence mi recibo?'
+        '📈 ¿Por qué subió mi recibo?',
+        '🧾 ¿Qué me están cobrando?',
+        '📦 ¿Qué plan tengo contratado?',
+        '📅 ¿Cuándo vence mi recibo?'
     ]);
 }
 
@@ -196,12 +218,13 @@ function setQuickChips(chips) {
         chip.className = 'chip-btn';
         chip.textContent = text;
         chip.addEventListener('click', () => {
-            if (text === 'Tengo una cuenta para consultar') {
+            if (text.includes('Tengo una cuenta')) {
                 messageInput.placeholder = "Escribe tu número de cuenta...";
                 messageInput.focus();
                 return;
             }
-            messageInput.value = text;
+            const cleanText = text.replace(/^[^\w¿?áéíóúÁÉÍÓÚ]+\s*/, '');
+            messageInput.value = cleanText;
             sendMessage();
         });
         quickChipsContainer.appendChild(chip);
@@ -209,55 +232,71 @@ function setQuickChips(chips) {
 }
 
 // ---------------------------------------------------------------------------
-// Renderizado de Mensajes
+// Renderizado de Mensajes con Burbujas Conversacionales
 // ---------------------------------------------------------------------------
 
 function addBotMessage(text, type = 'normal') {
-    const div = document.createElement('div');
-    div.className = 'message bot';
-    if (type === 'evidence') div.classList.add('evidence');
+    const row = document.createElement('div');
+    row.className = 'message-row bot';
+
+    // Avatar mini de Lucía a la izquierda
+    const avatar = document.createElement('div');
+    avatar.className = 'bot-avatar-mini';
+    avatar.textContent = 'L';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'bubble-wrap bot';
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    
-    // Formateo markdown amigable
+    if (type === 'evidence') bubble.style.fontFamily = 'monospace';
+
     let formatted = text
         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
         .replace(/`([^`]+)`/g, '<code style="background:#e2e8f0;padding:2px 6px;border-radius:4px;font-family:monospace;font-size:0.85em;">$1</code>')
         .replace(/\n/g, '<br>');
-        
+
     bubble.innerHTML = formatted;
-    div.appendChild(bubble);
-    messagesContainer.appendChild(div);
+    wrap.appendChild(bubble);
+
+    row.appendChild(avatar);
+    row.appendChild(wrap);
+
+    messagesContainer.appendChild(row);
     scrollToBottom();
-    return div;
+    return wrap;
 }
 
 function addUserMessage(text) {
-    const div = document.createElement('div');
-    div.className = 'message user';
+    const row = document.createElement('div');
+    row.className = 'message-row user';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'bubble-wrap user';
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     bubble.textContent = text;
 
-    div.appendChild(bubble);
-    messagesContainer.appendChild(div);
+    wrap.appendChild(bubble);
+    row.appendChild(wrap);
+
+    messagesContainer.appendChild(row);
     scrollToBottom();
-    return div;
+    return wrap;
 }
 
-function addConfidenceBadge(parentDiv, confidenceScore, casoValidado) {
+function addConfidenceBadge(parentWrap, confidenceScore, casoValidado) {
     const badge = document.createElement('div');
     badge.className = `confidence-badge ${casoValidado ? 'validated' : 'learning'}`;
     badge.innerHTML = casoValidado
         ? `✓ Caso validado · confianza ${confidenceScore}%`
         : `◌ Caso nuevo, en aprendizaje · confianza ${confidenceScore}%`;
-    parentDiv.appendChild(badge);
+    parentWrap.appendChild(badge);
     scrollToBottom();
 }
 
-function addFeedbackButtons(parentDiv) {
+function addFeedbackButtons(parentWrap) {
     const bar = document.createElement('div');
     bar.className = 'feedback-bar';
     bar.innerHTML = `
@@ -277,7 +316,7 @@ function addFeedbackButtons(parentDiv) {
         sendFeedback(-1);
     });
 
-    parentDiv.appendChild(bar);
+    parentWrap.appendChild(bar);
 }
 
 async function sendFeedback(score) {
@@ -310,31 +349,37 @@ function addHandoffBanner(intentCategory) {
 }
 
 function addUpsellCard(suggestion) {
-    const div = document.createElement('div');
-    div.className = 'message bot';
-    div.innerHTML = `
-        <div class="upsell-card">
-            <div class="upsell-title">✨ ${suggestion.nombre}</div>
-            <div style="font-size: 0.85rem">${suggestion.beneficios || ''}</div>
-            <div style="font-size: 0.8rem; margin-top: 5px; color: var(--text-muted)">Precio estimado: S/ ${suggestion.precio}</div>
-            <button class="upsell-button" onclick="alert('¡Solicitud de plan enviada con éxito!')">Me interesa este plan</button>
+    const row = document.createElement('div');
+    row.className = 'message-row bot';
+    row.innerHTML = `
+        <div class="bot-avatar-mini">L</div>
+        <div class="bubble-wrap bot" style="width:100%;">
+            <div class="upsell-card">
+                <div class="upsell-title">✨ ${suggestion.nombre}</div>
+                <div style="font-size: 0.82rem">${suggestion.beneficios || ''}</div>
+                <div style="font-size: 0.78rem; margin-top: 4px; color: var(--text-muted)">Precio estimado: S/ ${suggestion.precio}</div>
+                <button class="upsell-button" onclick="alert('¡Solicitud de plan enviada con éxito!')">Me interesa este plan</button>
+            </div>
         </div>
     `;
-    messagesContainer.appendChild(div);
+    messagesContainer.appendChild(row);
     scrollToBottom();
 }
 
 function showTyping() {
-    const div = document.createElement('div');
-    div.className = 'message bot';
-    div.id = 'typing-indicator';
-    div.innerHTML = `<div class="typing-indicator"><span></span><span></span><span></span></div>`;
-    messagesContainer.appendChild(div);
+    const row = document.createElement('div');
+    row.className = 'message-row bot';
+    row.id = 'typing-indicator-row';
+    row.innerHTML = `
+        <div class="bot-avatar-mini">L</div>
+        <div class="typing-indicator"><span></span><span></span><span></span></div>
+    `;
+    messagesContainer.appendChild(row);
     scrollToBottom();
 }
 
 function hideTyping() {
-    const el = document.getElementById('typing-indicator');
+    const el = document.getElementById('typing-indicator-row');
     if (el) el.remove();
 }
 
@@ -384,14 +429,14 @@ async function sendMessage() {
         const data = await response.json();
         hideTyping();
 
-        let ultimoDiv = null;
+        let ultimoWrap = null;
         for (const msg of data.messages) {
             if (msg.delay_ms > 0) {
                 showTyping();
                 await sleep(msg.delay_ms);
                 hideTyping();
             }
-            ultimoDiv = addBotMessage(msg.text, msg.type);
+            ultimoWrap = addBotMessage(msg.text, msg.type);
         }
 
         // Si se evaluó facturación, mostrar badge de confianza y feedback
@@ -400,16 +445,16 @@ async function sendMessage() {
                 'CONSULTA_DEUDA', 'CONSULTA_PLAN_ACTUAL', 'CONSULTA_GENERAL_PLANES', 'CONSULTA_SIN_CUENTA']
                 .includes(data.intent_category);
 
-        if (esFacturacion && ultimoDiv) {
-            addConfidenceBadge(ultimoDiv, data.confidence_score, data.caso_validado);
+        if (esFacturacion && ultimoWrap) {
+            addConfidenceBadge(ultimoWrap, data.confidence_score, data.caso_validado);
         }
 
-        if (ultimoDiv) {
-            addFeedbackButtons(ultimoDiv);
+        if (ultimoWrap) {
+            addFeedbackButtons(ultimoWrap);
         }
 
         if (data.plan_optimizer_suggestion && data.plan_optimizer_suggestion.available) {
-            await sleep(600);
+            await sleep(500);
             addUpsellCard(data.plan_optimizer_suggestion);
         }
 
