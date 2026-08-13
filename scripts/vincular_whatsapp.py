@@ -94,7 +94,8 @@ def main():
                 facts = calculate_billing_facts(elegida, db)
                 alerta = facts["upcoming_alerts"][0]
                 from app.services.llm import generate_proactive_alert_message
-                msg = generate_proactive_alert_message(alerta)
+                historial = crud.get_historial_reciente_usuario(db, user_id=elegida, whatsapp_number=args.numero)
+                msg = generate_proactive_alert_message(alerta, historial_conversacion=historial)
                 send_whatsapp_text(args.numero, msg)
                 print(f"🚀 Alerta enviada a +{args.numero}:\n{msg}")
             return
@@ -111,12 +112,14 @@ def main():
                 alertas = facts.get("upcoming_alerts") or []
                 if alertas:
                     from app.services.llm import generate_proactive_alert_message
-                    msg = generate_proactive_alert_message(alertas[0])
+                    historial = crud.get_historial_reciente_usuario(db, user_id=args.cuenta, whatsapp_number=args.numero)
+                    msg = generate_proactive_alert_message(alertas[0], historial_conversacion=historial)
                 else:
                     msg = f"🔔 Prueba de conexión: tu cuenta {args.cuenta} está vinculada correctamente a Lucía."
                 send_whatsapp_text(args.numero, msg)
                 print(f"🚀 Mensaje enviado a +{args.numero}:\n{msg}")
             return
+
 
         parser.print_help()
     finally:

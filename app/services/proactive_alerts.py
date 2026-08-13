@@ -72,9 +72,15 @@ def run_proactive_check(db: Session) -> Dict[str, Any]:
             continue
 
 
+        contacto = crud.get_contacto_usuario(db, user_id)
+        historial = crud.get_historial_reciente_usuario(
+            db, user_id=user_id, whatsapp_number=contacto.whatsapp_number if contacto else None
+        )
+
         for alerta in alertas:
-            mensaje = generate_proactive_alert_message(alerta)
+            mensaje = generate_proactive_alert_message(alerta, historial_conversacion=historial)
             envio = _enviar_alerta(db, user_id, mensaje)
+
 
             # Si no hay canal externo disponible (testing local), registramos
             # igualmente la alerta con canal "panel" para hacerla visible en el admin.

@@ -351,16 +351,27 @@ def enviar_alerta_manual(request: EnviarAlertaManualRequest, db: Session = Depen
     if not mensaje_a_enviar and request.user_id:
         facts = calculate_billing_facts(request.user_id, db)
         alertas = facts.get("upcoming_alerts") or []
+        historial = crud.get_historial_reciente_usuario(
+            db, user_id=request.user_id, whatsapp_number=destino_whatsapp
+        )
         if alertas:
-            mensaje_a_enviar = generate_proactive_alert_message(alertas[0])
+            mensaje_a_enviar = generate_proactive_alert_message(alertas[0], historial_conversacion=historial)
         else:
             plan = facts.get("plan_actual", "tu plan")
             monto = facts.get("current_bill", {}).get("amount", 0.0)
-            mensaje_a_enviar = (
-                f"¡Hola! Soy Lucía de Movistar. Te confirmo que tu cuenta {request.user_id} ({plan}) "
-                f"está al día con un último recibo de S/ {monto:.2f}. "
-                "¿Tienes alguna duda sobre tu facturación?"
-            )
+            if historial and len(historial) > 0:
+                mensaje_a_enviar = (
+                    f"Aprovechando que estamos en contacto, te confirmo que tu cuenta {request.user_id} ({plan}) "
+                    f"está al día con un último recibo de S/ {monto:.2f}. "
+                    "¿Deseas consultar algún detalle adicional?"
+                )
+            else:
+                mensaje_a_enviar = (
+                    f"¡Hola! Soy Lucía de Movistar. Te confirmo que tu cuenta {request.user_id} ({plan}) "
+                    f"está al día con un último recibo de S/ {monto:.2f}. "
+                    "¿Tienes alguna duda sobre tu facturación?"
+                )
+
 
     if not mensaje_a_enviar:
         mensaje_a_enviar = (

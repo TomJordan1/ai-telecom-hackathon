@@ -228,7 +228,33 @@ def verificar_existe_cuenta(db: Session, account_id: str) -> bool:
     return planta is not None
 
 
+def get_historial_reciente_usuario(db: Session, user_id: str | None = None, whatsapp_number: str | None = None) -> list:
+    """
+    Recupera los mensajes del historial conversacional más reciente asociado al usuario o número de WhatsApp.
+    Permite saber si ya existe una conversación activa para contextualizar los mensajes de alerta proactiva.
+    """
+    # 1. Buscar por sesión de WhatsApp primero si se proporcionó número
+    if whatsapp_number:
+        clean_wa = "".join(filter(str.isdigit, str(whatsapp_number)))
+        historial = db.query(models.HistorialInteracciones).filter(
+            models.HistorialInteracciones.session_id.in_([f"wa_{clean_wa}", f"wa_+{clean_wa}"])
+        ).order_by(models.HistorialInteracciones.updated_at.desc()).first()
+        if historial and historial.historial_conversacion:
+            return historial.historial_conversacion
+
+    # 2. Buscar por user_id en historial de interacciones
+    if user_id:
+        historial = db.query(models.HistorialInteracciones).filter(
+            models.HistorialInteracciones.user_id == str(user_id)
+        ).order_by(models.HistorialInteracciones.updated_at.desc()).first()
+        if historial and historial.historial_conversacion:
+            return historial.historial_conversacion
+
+    return []
+
+
 TTL_MENSAJES_PROCESADOS_HORAS = 24  # ventana suficiente para cubrir reintentos de Meta
+
 
 
 
