@@ -490,44 +490,67 @@ def classify_and_reply(
 
 _SYSTEM_ALERTA_PROACTIVA = """{identidad}
 
-TAREA
-Vas a iniciar tú la conversación (el usuario no te ha escrito). Redacta un
-mensaje breve, cálido y proactivo que avise sobre lo siguiente, usando
-EXCLUSIVAMENTE estos datos verificados (no inventes ningún dato adicional):
+DATOS VERIFICADOS DE LA ALERTA:
+- Concepto: {concepto}
+- Último ciclo facturado con el beneficio: {fecha_fin}
+- Duración pactada del beneficio: {duracion_pactada} mes(es)
+- Ciclos en que ya se facturó: {ciclos_facturados}
+- Impacto estimado en el recibo: {impacto_estimado}
 
-Concepto: {concepto}
-Último ciclo facturado con el beneficio: {fecha_fin}
-Duración pactada del beneficio: {duracion_pactada} mes(es)
-Ciclos en que ya se facturó: {ciclos_facturados}
-Impacto estimado en el recibo: {impacto_estimado}
+CONTEXTO DE LA CONVERSACIÓN:
+{contexto_conversacion}
 
-REGLAS
-- 1 a 2 frases, tono cercano, sin tecnicismos.
-- Menciona el impacto estimado usando exactamente el valor dado (ya viene con
-  el símbolo de moneda correcto). No inventes ni redondees otro monto.
-- El beneficio termina al completarse su duración pactada. Habla de "tu próximo
-  recibo" o del ciclo indicado; NO inventes una fecha ni un número de días
-  exactos, porque ese dato no existe en la información verificada.
-- Cierra invitando a la persona a preguntar si quiere más detalle o ver opciones.
+REGLAS DE REDACCIÓN:
+{reglas_contexto}
+- 1 a 2 frases, tono cercano y natural, sin tecnicismos ni frialdad.
+- Menciona el impacto estimado usando exactamente el valor dado ({impacto_estimado}). No inventes ni redondees otro monto.
+- El beneficio termina al completarse su duración pactada. Habla de "tu próximo recibo" o del ciclo indicado; NO inventes una fecha ni un número de días exactos.
+- Cierra invitando a la persona a preguntar si quiere más detalle o ver opciones para su plan.
 - No menciones puntajes, IDs, ni nada de la mecánica interna del sistema.
 """
 
 
-def generate_proactive_alert_message(alert: Dict[str, Any], perfil_lexico: Optional[str] = None) -> str:
+def generate_proactive_alert_message(
+    alert: Dict[str, Any],
+    perfil_lexico: Optional[str] = None,
+    historial_conversacion: Optional[List[Dict[str, Any]]] = None
+) -> str:
     """
-    Redacta el texto de una alerta proactiva a partir de un upcoming_alert ya
-    calculado de forma determinista. Si el LLM no está disponible, usa una
-    plantilla fija (sin inventar nada, solo interpola los mismos datos verificados).
+    Redacta el texto de una alerta proactiva a partir de un upcoming_alert.
+    Si detecta que ya existe una conversación previa activa, adapta la redacción
+    para no interrumpir con un '¡Hola!' frío y conectar naturalmente con el contexto.
     """
+    tiene_historial = bool(historial_conversacion and len(historial_conversacion) > 0)
     duracion = alert.get("duracion_pactada_meses")
     detalle_duracion = f" (estaba pactado por {duracion} mes(es))" if duracion else ""
-    fallback = (
-        f"¡Hola! Quería avisarte con tiempo: tu beneficio "
-        f"\"{alert.get('concepto', 'promoción')}\"{detalle_duracion} ya llegó a su último "
-        f"ciclo facturado ({alert.get('fecha_fin')}). "
-        f"El impacto estimado en tu próximo recibo sería de {alert.get('impacto_estimado')}. "
-        "¿Quieres que revisemos juntos tus opciones?"
-    )
+
+    if tiene_historial:
+        fallback = (
+            f"Por cierto, quería comentarte un detalle importante sobre tu línea: tu beneficio "
+            f"\"{alert.get('concepto', 'promoción')}\"{detalle_duracion} finaliza en este ciclo ({alert.get('fecha_fin')}), "
+            f"lo que representará un aumento estimado de {alert.get('impacto_estimado')} en tu próximo recibo. "
+            "Si deseas, podemos revisar juntos alternativas para tu plan."
+        )
+        contexto_conversacion = (
+            "Ya existe una conversación previa activa con este usuario en la sesión.\n"
+            f"Últimos mensajes intercambiados:\n{_formatear_historial(historial_conversacion[-4:])}"
+        )
+        reglas_contexto = (
+            "- NO saludes con un frío o desconectado '¡Hola!' ni actúes como si apenas estuvieras iniciando la conversación desde cero.\n"
+            "- Conecta con fluidez y naturalidad con la conversación en curso usando conectores como 'Por cierto...', 'Aprovechando que estamos en contacto...', 'Un detalle importante sobre tu línea...', o 'A propósito de lo que veníamos revisando...'"
+        )
+    else:
+        fallback = (
+            f"¡Hola! Quería avisarte con tiempo: tu beneficio "
+            f"\"{alert.get('concepto', 'promoción')}\"{detalle_duracion} ya llegó a su último "
+            f"ciclo facturado ({alert.get('fecha_fin')}). "
+            f"El impacto estimado en tu próximo recibo sería de {alert.get('impacto_estimado')}. "
+            "¿Quieres que revisemos juntos tus opciones?"
+        )
+        contexto_conversacion = "El usuario no ha interactuado recientemente (primer contacto proactivo)."
+        reglas_contexto = (
+            "- Saluda amablemente al inicio ('¡Hola! Quería avisarte con tiempo sobre tu línea...')."
+        )
 
     if not llm_is_available():
         return fallback
@@ -541,14 +564,17 @@ def generate_proactive_alert_message(alert: Dict[str, Any], perfil_lexico: Optio
             duracion_pactada=alert.get("duracion_pactada_meses") or "no informada",
             ciclos_facturados=alert.get("ciclos_facturados") or "no informado",
             impacto_estimado=alert.get("impacto_estimado"),
+            contexto_conversacion=contexto_conversacion,
+            reglas_contexto=reglas_contexto,
         )
         instruccion = persona.instruccion_registro(perfil_lexico)
         resultado = llm.invoke([
             ("system", system_prompt + f"\n\nGUÍA DE REGISTRO: {instruccion}"),
-            ("user", "Genera el mensaje proactivo."),
+            ("user", "Genera el mensaje proactivo adaptado al contexto."),
         ])
         texto = (getattr(resultado, "content", "") or "").strip()
         return texto or fallback
     except Exception as e:
         print(f"Error generando alerta proactiva con LLM: {e}. Se usará fallback.")
         return fallback
+

@@ -21,15 +21,57 @@
         </header>
 
         <nav class="admin-tabs">
-            <button class="tab-btn active" data-tab="handoff">Cola de Atención Humana</button>
+            <button class="tab-btn active" data-tab="contactos">📱 Mapeo WhatsApp & Alertas</button>
+            <button class="tab-btn" data-tab="handoff">Cola de Atención Humana</button>
             <button class="tab-btn" data-tab="cuarentena">Casos en Cuarentena</button>
             <button class="tab-btn" data-tab="base-casos">Base de Conocimiento</button>
-            <button class="tab-btn" data-tab="proactivas">Alertas Proactivas</button>
+            <button class="tab-btn" data-tab="proactivas">Barrido Masivo</button>
         </nav>
 
+
         <main class="admin-content">
+            <!-- TAB: Mapeo WhatsApp & Notificaciones -->
+            <section class="tab-panel active" id="tab-contactos">
+                <div class="panel-header">
+                    <h2>Mapeo de WhatsApp y Envío Directo de Alertas</h2>
+                </div>
+                <p class="tab-description">
+                    Asocia tu número de WhatsApp real a cualquier cuenta financiera del dataset. Puedes seleccionar cuentas con alertas de <strong>Fin de Promoción</strong> para probar el disparo de alertas proactivas o consultar tus recibos directamente escribiendo al bot de WhatsApp.
+                </p>
+
+                <div class="card" style="margin-bottom: 20px;">
+                    <div class="card-title" style="margin-bottom: 12px; font-size: 1rem; color: var(--primary);">🔗 Vincular Número a Cuenta Financiera</div>
+                    <div style="display: flex; flex-direction: column; gap: 12px;">
+                        <div>
+                            <label style="font-size: 0.85rem; font-weight: 600; display: block; margin-bottom: 4px;">Tu número de WhatsApp (con código de país, ej: 51987654321):</label>
+                            <input type="text" id="input-wa-number" placeholder="Ej: 51987654321" style="width: 100%; padding: 9px 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 0.9rem;">
+                        </div>
+                        <div>
+                            <label style="font-size: 0.85rem; font-weight: 600; display: block; margin-bottom: 4px;">Selecciona una cuenta con promociones por vencer (o ingresa una manual):</label>
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <select id="select-cuenta-alerta" style="flex: 2; min-width: 260px; padding: 9px 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 0.88rem; background: white;">
+                                    <option value="">-- Cuentas con Fin de Promoción activas --</option>
+                                </select>
+                                <input type="text" id="input-wa-account" placeholder="O escribe cuenta (ej. 102968745)" style="flex: 1; min-width: 200px; padding: 9px 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 0.9rem;">
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 10px; margin-top: 6px; flex-wrap: wrap;">
+                            <button id="btn-vincular-wa" class="btn-primary">🔗 Guardar y Vincular WhatsApp</button>
+                            <button id="btn-enviar-test-wa" class="btn-secondary" style="background: #ecfdf5; border-color: #10b981; color: #047857;">🚀 Enviar Alerta Proactiva a mi WhatsApp Ahora</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel-header" style="margin-top: 24px;">
+                    <h3>Números de WhatsApp Vinculados en el Sistema</h3>
+                </div>
+                <div id="contactos-list" class="card-list">
+                    <p class="empty-state">Cargando contactos...</p>
+                </div>
+            </section>
+
             <!-- TAB: Cola de Atención Humana -->
-            <section class="tab-panel active" id="tab-handoff">
+            <section class="tab-panel" id="tab-handoff">
                 <div class="panel-header">
                     <h2>Casos derivados a un asesor</h2>
                     <label class="toggle-pendientes">
