@@ -3,47 +3,44 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lucía - Copiloto de Facturación</title>
-    <link rel="stylesheet" href="styles.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <title>Lucía - Copiloto de Facturación Movistar</title>
+    <link rel="stylesheet" href="styles.css?v=10">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="login-overlay" id="login-overlay">
-        <div class="login-box">
-            <h2>Bienvenido a Lucía</h2>
-            <p>Por favor, ingresa tu cuenta financiera para acceder a tu información de facturación.</p>
-            <input type="text" id="login-id" placeholder="Ej. 102968745" autocomplete="off">
-            <button id="login-btn">Iniciar Sesión</button>
-            <p class="login-hint">Para pruebas usa una cuenta financiera de la base (FINANCIAL_ACCOUNT). Si no conoces ninguna, consulta <code>GET /api/v1/cuenta-demo</code>.</p>
-        </div>
-    </div>
-    
     <div class="chat-container">
         <header class="chat-header">
             <div class="avatar">L</div>
             <div class="header-info">
                 <h2>Lucía</h2>
-                <p>Copiloto de Facturación</p>
+                <p>Copiloto de Facturación · Movistar</p>
             </div>
-            <div class="demo-controls">
-                <!-- Mostraremos el id del usuario validado -->
-                <span id="current-user-display" style="font-size: 0.8rem; margin-right: 10px; color: #555;"></span>
-                <button type="button" class="admin-link" onclick="nuevaConversacion()" title="Cerrar sesión">🚪</button>
-                <a href="admin.html" class="admin-link" title="Panel de administración">⚙</a>
+            <div class="header-actions">
+                <span class="session-badge" id="session-badge">Visitante</span>
+                <button type="button" class="btn-icon" onclick="nuevaConversacion()" title="Reiniciar conversación">↻</button>
+                <a href="admin.html" class="btn-icon" title="Panel de administración">⚙</a>
             </div>
         </header>
-        
+
         <main class="chat-messages" id="chat-messages">
-            <!-- Los mensajes se insertarán aquí dinámicamente -->
+            <!-- Mensajes dinámicos generados por Lucía y el usuario -->
         </main>
-        
-        <footer class="chat-input">
-            <input type="text" id="message-input" placeholder="Escribe tu consulta aquí..." autocomplete="off" disabled>
-            <button id="send-button" disabled>
-                <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+
+        <div class="quick-chips" id="quick-chips">
+            <!-- Sugerencias de 1 clic -->
+        </div>
+
+        <footer class="chat-input-area">
+            <input type="text" id="message-input" placeholder="Escribe un mensaje o tu número de cuenta..." autocomplete="off">
+            <button id="send-button" type="button" title="Enviar">
+                <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
             </button>
         </footer>
     </div>
-    <script src="app.js"></script>
+
+    <script src="app.js?v=10"></script>
 </body>
 </html>

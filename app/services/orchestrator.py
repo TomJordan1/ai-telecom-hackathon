@@ -544,12 +544,85 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
 
     # Paso 3: Motor Investigador (Determinista)
     components_invoked.append("deterministic_engine")
+
+    # Detección de cuenta en el texto del mensaje para auto-asociar la sesión
+    match_cuenta = re.search(
+        r"\b(?:cuenta|mi\s+cuenta(?:\s+es)?|vincular(?:\s+cuenta)?|asociar|id|cliente|codigo|c[oó]digo)\s*[:=]?\s*([0-9]{6,12})\b",
+        request.message,
+        re.IGNORECASE
+    )
+    if not match_cuenta and re.fullmatch(r"[0-9]{6,12}", request.message.strip()):
+        match_cuenta = re.search(r"([0-9]{6,12})", request.message.strip())
+
+    if match_cuenta:
+        cuenta_detectada = match_cuenta.group(1)
+        if crud.verificar_existe_cuenta(db, cuenta_detectada):
+            request.user_id = cuenta_detectada
+            crud.update_historial(db, request.session_id, {"user_id": cuenta_detectada})
+
     fact_payload = calculate_billing_facts(request.user_id, db)
+
+    # Manejo de usuarios visitantes (no clientes o sin cuenta identificada aún)
+    if "error" in fact_payload:
+        # 1. Si preguntan explícitamente por un recibo específico sin cuenta vinculada:
+        pregunta_facturacion_personal = any(
+            w in request.message.lower()
+            for w in ["recibo", "factura", "mi cobro", "deuda", "por qué subió", "por que subio", "cuanto debo", "mi saldo", "desglose"]
+        )
+        if pregunta_facturacion_personal:
+            response = ChatResponse(
+                session_id=request.session_id,
+                intent_category="CONSULTA_SIN_CUENTA",
+                sentiment_score=3,
+                confidence_score=95,
+                messages=[
+                    MessageChunk(
+                        text="Para revisar el detalle y la variación de tus recibos específicos, por favor indícame tu número de cuenta financiera (ej. `102968745`) o selecciona una de nuestras cuentas de prueba. Si no eres cliente, dime qué planes te gustaría conocer. 😊",
+                        type="explanation"
+                    )
+                ],
+                personality_metadata=PersonalityMetadata(
+                    lucia_tone=persona.tono_para_metadata(perfil_lexico)
+                )
+            )
+            _registrar_auditoria(
+                db, request.session_id, started_at, response.intent_category, components_invoked,
+                confidence_score=response.confidence_score
+            )
+            return _finalizar(db, request, response)
+
+        # 2. Si es una consulta informativa general (planes, servicios, fibra, etc.):
+        rag_context = retrieve_context(request.message)
+        response = generate_response(
+            session_id=request.session_id,
+            user_message=request.message,
+            deterministic_payload={
+                "moneda": "PEN",
+                "simbolo_moneda": "S/",
+                "current_bill": {"amount": 0.0, "issue_date": "N/A", "desglose": []},
+                "variation_amount": 0.0,
+                "detected_event": "CONSULTA_GENERAL_PLANES",
+                "evidence": ["Consulta informativa de visitante sobre catálogo y servicios."]
+            },
+            rag_context=rag_context,
+            cross_sell_eligible=False,
+            pending_emotions=pending_emotions,
+            perfil_lexico=perfil_lexico,
+            historial_conversacion=historial_conversacion,
+        )
+        response.confidence_score = 95
+        response.intent_category = "CONSULTA_GENERAL_PLANES"
+        _registrar_auditoria(
+            db, request.session_id, started_at, response.intent_category, components_invoked,
+            confidence_score=response.confidence_score
+        )
+        return _finalizar(db, request, response)
 
     # Paso 3.5: Case Matcher — ¿existe una solución validada para este patrón?
     components_invoked.append("case_matcher")
     caso_match = match_caso(db, fact_payload)
     caso_id_origen = None  # Se usará para registrar feedback después
+
 
     if caso_match:
         caso_id_origen, solucion_conocida = caso_match

@@ -197,7 +197,39 @@ def upsert_contacto_usuario(db: Session, user_id: str, whatsapp_number: str = No
     return contacto
 
 
+def get_all_contactos(db: Session):
+    """Lista todos los registros de contactos (WhatsApp y Telegram)."""
+    return db.query(models.ContactoUsuario).all()
+
+
+def delete_contacto_usuario(db: Session, user_id: str) -> bool:
+    """Elimina la vinculación de un contacto por su user_id."""
+    contacto = get_contacto_usuario(db, user_id)
+    if contacto:
+        db.delete(contacto)
+        db.commit()
+        return True
+    return False
+
+
+def verificar_existe_cuenta(db: Session, account_id: str) -> bool:
+    """Comprueba si una cuenta financiera existe en la base de facturación o planta."""
+    if not account_id:
+        return False
+    str_acc = str(account_id).strip()
+    fact = db.query(models.FacturacionCliente.id).filter(
+        models.FacturacionCliente.financial_account_key == str_acc
+    ).first()
+    if fact:
+        return True
+    planta = db.query(models.PlantaCliente.id).filter(
+        models.PlantaCliente.financial_account == str_acc
+    ).first()
+    return planta is not None
+
+
 TTL_MENSAJES_PROCESADOS_HORAS = 24  # ventana suficiente para cubrir reintentos de Meta
+
 
 
 def _purgar_mensajes_procesados(db: Session):
@@ -274,65 +306,89 @@ def peek_ultima_actividad(db: Session, session_id: str, user_id: str):
     return historial.updated_at if historial else None
 
 
+def _sanitizar_user_id_para_fk(db: Session, user_id: str | None) -> str | None:
+    """Retorna user_id solo si existe en contactos_usuario o planta_clientes, sino None para permitir sesiones de invitados."""
+    if not user_id:
+        return None
+    uid = str(user_id).strip()
+    if uid.startswith("invitado") or uid in ("anonimo", "guest", "visitante"):
+        return None
+    # Si existe la cuenta o contacto, se retorna el ID
+    if verificar_existe_cuenta(db, uid):
+        # Asegurar que esté en contactos_usuario para no violar FK
+        contacto = db.query(models.ContactoUsuario).filter(models.ContactoUsuario.user_id == uid).first()
+        if not contacto:
+            try:
+                db.add(models.ContactoUsuario(user_id=uid))
+                db.flush()
+            except Exception:
+                db.rollback()
+        return uid
+    return None
+
+
 def get_or_create_historial(db: Session, session_id: str, user_id: str):
     """
     Recupera o crea el historial conversacional de un usuario.
-
-    Estrategia de lookup:
-    1. Busca por user_id (memoria a largo plazo, sobrevive entre sesiones).
-    2. Si lo encuentra pero el session_id cambió (nueva pestaña/sesión),
-       transfiere el session_id para que las escrituras posteriores lo encuentren.
-    3. Fallback: busca por session_id (usuarios anónimos o sin recibos).
-    4. Si no existe nada, crea un registro nuevo.
+    Resiliente ante sesiones de visitantes (user_id=None en DB) y usuarios registrados.
     """
-    if user_id and user_id != "anonimo":
+    db_uid = _sanitizar_user_id_para_fk(db, user_id)
+    try:
+        # 1. Buscar por session_id primero
         historial = db.query(models.HistorialInteracciones).filter(
-            models.HistorialInteracciones.user_id == user_id
-        ).order_by(models.HistorialInteracciones.updated_at.desc()).first()
-
+            models.HistorialInteracciones.session_id == session_id
+        ).first()
         if historial:
-            if historial.session_id != session_id:
-                # El usuario volvió con un nuevo session_id. Transferimos.
-                # Primero, eliminar cualquier fila huérfana que ya ocupe ese
-                # session_id (puede pasar si el mismo browser fue usado por
-                # otro usuario antes, o si se generó un registro anónimo previo).
-                try:
-                    conflicto = db.query(models.HistorialInteracciones).filter(
-                        models.HistorialInteracciones.session_id == session_id,
-                        models.HistorialInteracciones.user_id != user_id,
-                    ).first()
-                    if conflicto:
-                        db.delete(conflicto)
-                        db.flush()
-
-                    historial.session_id = session_id
-                    db.commit()
-                    db.refresh(historial)
-                except IntegrityError:
-                    db.rollback()
-                    # Si aún así falla, usamos el historial tal cual está.
-                    # Las escrituras posteriores lo buscarán por session_id antiguo,
-                    # así que lo refrescamos para tener el valor actual.
-                    db.refresh(historial)
+            if db_uid and historial.user_id != db_uid:
+                historial.user_id = db_uid
+                db.commit()
             return historial
 
-    # Fallback al comportamiento por session_id (para no clientes)
-    historial = db.query(models.HistorialInteracciones).filter(
-        models.HistorialInteracciones.session_id == session_id
-    ).first()
-    if not historial:
-        historial = models.HistorialInteracciones(session_id=session_id, user_id=user_id)
-        try:
-            db.add(historial)
-            db.commit()
-            db.refresh(historial)
-        except IntegrityError:
-            db.rollback()
-            # Raro: alguien más creó la misma sesión en paralelo. Recuperarla.
-            historial = db.query(models.HistorialInteracciones).filter(
-                models.HistorialInteracciones.session_id == session_id
-            ).first()
-    return historial
+        # 2. Si es cliente identificado, buscar si tenía sesión previa
+        if db_uid:
+            previo = db.query(models.HistorialInteracciones).filter(
+                models.HistorialInteracciones.user_id == db_uid
+            ).order_by(models.HistorialInteracciones.updated_at.desc()).first()
+            if previo:
+                nuevo = models.HistorialInteracciones(
+                    session_id=session_id,
+                    user_id=db_uid,
+                    comentarios_emocionales=previo.comentarios_emocionales or [],
+                    score_sentimiento=previo.score_sentimiento or 3,
+                    perfil_lexico_usuario=previo.perfil_lexico_usuario or "CASUAL",
+                    historial_conversacion=previo.historial_conversacion or []
+                )
+                db.add(nuevo)
+                db.commit()
+                db.refresh(nuevo)
+                return nuevo
+
+        # 3. Crear registro nuevo (para visitante o nuevo cliente)
+        nuevo = models.HistorialInteracciones(
+            session_id=session_id,
+            user_id=db_uid,
+            comentarios_emocionales=[],
+            score_sentimiento=3,
+            perfil_lexico_usuario="CASUAL",
+            historial_conversacion=[]
+        )
+        db.add(nuevo)
+        db.commit()
+        db.refresh(nuevo)
+        return nuevo
+    except Exception as e:
+        db.rollback()
+        print(f"[HISTORIAL] Fallback en memoria para session_id={session_id}: {e}")
+        return models.HistorialInteracciones(
+            session_id=session_id,
+            user_id=db_uid,
+            comentarios_emocionales=[],
+            score_sentimiento=3,
+            perfil_lexico_usuario="CASUAL",
+            historial_conversacion=[]
+        )
+
+
 
 EMOTIONAL_COMMENT_TTL_DAYS = 14  # expiración: no crecer el contexto indefinidamente
 MAX_COMENTARIOS_EMOCIONALES = 5  # consolidación: solo se conservan los más recientes
