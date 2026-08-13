@@ -86,7 +86,7 @@ def _generate_mock_response(
     upcoming_alerts_list = deterministic_payload.get("upcoming_alerts") or []
     if upcoming_alerts_list and not pending_issue_followup:
         alert = upcoming_alerts_list[0]
-        messages.append(MessageChunk(text=f"Por cierto, noté que tu {alert.get('concepto')} termina el {alert.get('fecha_fin')}. ¡Avisado estás! Ahora, sobre tu consulta...", type="hook", delay_ms=0))
+        messages.append(MessageChunk(text=f"Por cierto, noté que tu beneficio \"{alert.get('concepto')}\" ya llegó a su último ciclo facturado. ¡Avisado estás! Ahora, sobre tu consulta...", type="hook", delay_ms=0))
     elif pending_emotions and not pending_issue_followup:
         # 3. Empatía por dudar de IA (ejemplo)
         # Check if it's an AI doubt emotion
@@ -129,7 +129,10 @@ def _generate_mock_response(
         else:
             messages.append(MessageChunk(text="¡Cualquier otra duda sobre tu recibo, aquí estoy para ayudarte!", type="explanation", delay_ms=1000))
         
-    historial = [BillSummary(month=pb['month'], amount=pb['amount']) for pb in deterministic_payload.get('previous_bills', [])]
+    historial = [
+        BillSummary(month=pb['month'], amount=pb['amount'], ciclo=pb.get('ciclo'))
+        for pb in deterministic_payload.get('previous_bills', [])
+    ]
 
     upcoming_alerts = [UpcomingAlert(**a) for a in upcoming_alerts_list]
 
@@ -493,14 +496,18 @@ mensaje breve, cálido y proactivo que avise sobre lo siguiente, usando
 EXCLUSIVAMENTE estos datos verificados (no inventes ningún dato adicional):
 
 Concepto: {concepto}
-Fecha en que termina: {fecha_fin}
-Días restantes: {dias_restantes}
+Último ciclo facturado con el beneficio: {fecha_fin}
+Duración pactada del beneficio: {duracion_pactada} mes(es)
+Ciclos en que ya se facturó: {ciclos_facturados}
 Impacto estimado en el recibo: {impacto_estimado}
 
 REGLAS
 - 1 a 2 frases, tono cercano, sin tecnicismos.
 - Menciona el impacto estimado usando exactamente el valor dado (ya viene con
   el símbolo de moneda correcto). No inventes ni redondees otro monto.
+- El beneficio termina al completarse su duración pactada. Habla de "tu próximo
+  recibo" o del ciclo indicado; NO inventes una fecha ni un número de días
+  exactos, porque ese dato no existe en la información verificada.
 - Cierra invitando a la persona a preguntar si quiere más detalle o ver opciones.
 - No menciones puntajes, IDs, ni nada de la mecánica interna del sistema.
 """
@@ -512,9 +519,12 @@ def generate_proactive_alert_message(alert: Dict[str, Any], perfil_lexico: Optio
     calculado de forma determinista. Si el LLM no está disponible, usa una
     plantilla fija (sin inventar nada, solo interpola los mismos datos verificados).
     """
+    duracion = alert.get("duracion_pactada_meses")
+    detalle_duracion = f" (estaba pactado por {duracion} mes(es))" if duracion else ""
     fallback = (
-        f"¡Hola! Quería avisarte con tiempo: tu {alert.get('concepto', 'promoción')} "
-        f"termina el {alert.get('fecha_fin')} (en {alert.get('dias_restantes')} días). "
+        f"¡Hola! Quería avisarte con tiempo: tu beneficio "
+        f"\"{alert.get('concepto', 'promoción')}\"{detalle_duracion} ya llegó a su último "
+        f"ciclo facturado ({alert.get('fecha_fin')}). "
         f"El impacto estimado en tu próximo recibo sería de {alert.get('impacto_estimado')}. "
         "¿Quieres que revisemos juntos tus opciones?"
     )
@@ -528,7 +538,8 @@ def generate_proactive_alert_message(alert: Dict[str, Any], perfil_lexico: Optio
             identidad=persona.IDENTIDAD_LUCIA,
             concepto=alert.get("concepto", "Descuento activo"),
             fecha_fin=alert.get("fecha_fin"),
-            dias_restantes=alert.get("dias_restantes"),
+            duracion_pactada=alert.get("duracion_pactada_meses") or "no informada",
+            ciclos_facturados=alert.get("ciclos_facturados") or "no informado",
             impacto_estimado=alert.get("impacto_estimado"),
         )
         instruccion = persona.instruccion_registro(perfil_lexico)

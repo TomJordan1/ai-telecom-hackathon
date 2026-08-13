@@ -14,10 +14,10 @@ from app.db.database import SessionLocal
 
 router = APIRouter()
 
-# Usuario de respaldo cuando el número entrante no está registrado en
-# contactos_usuario. Permite que un jurado escriba desde cualquier celular y
-# vea una demo coherente en lugar de un error.
-USER_ID_FALLBACK = "user_a_fin_promo"
+# La cuenta de respaldo se resuelve contra la base real (crud.get_cuenta_demo):
+# se elige una cuenta financiera con historial suficiente para explicar una
+# variación. Así un jurado puede escribir desde cualquier celular y ver una
+# demo coherente, sin depender de un identificador escrito en el código.
 
 
 def _extraer_texto(message: dict) -> str:
@@ -47,11 +47,15 @@ def _procesar_y_responder(phone_number: str, user_text: str, message_id: str):
         # cada cliente ve sus propios recibos, no los de un mock fijo.
         user_id = crud.get_user_id_por_whatsapp(db, phone_number)
         if user_id:
-            print(f"[WA WEBHOOK] Numero {phone_number} -> user_id={user_id}")
+            print(f"[WA WEBHOOK] Numero {phone_number} -> cuenta={user_id}")
         else:
-            user_id = USER_ID_FALLBACK
+            user_id = crud.get_cuenta_demo(db)
+            if not user_id:
+                print(f"[WA WEBHOOK] Numero {phone_number} no registrado y la base no "
+                      f"tiene cuentas facturadas. Ejecuta scripts/ingest_real_data.py.")
+                return
             print(f"[WA WEBHOOK] Numero {phone_number} no registrado en "
-                  f"contactos_usuario, se usa fallback user_id={user_id}")
+                  f"contactos_usuario, se usa la cuenta de demostración {user_id}")
 
         chat_request = ChatRequest(
             session_id=f"wa_{phone_number}",

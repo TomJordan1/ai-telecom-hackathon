@@ -31,7 +31,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.core.config import settings  # noqa: E402
 from app.services import embeddings as embeddings_service  # noqa: E402
 
-FUENTE = "manual_politicas_v1"
+# v2: corpus ampliado para cubrir todos los eventos que produce el motor
+# determinista sobre el dataset real (cambio de plan, paquetes, consumo
+# adicional, notas de crédito/débito, nuevos descuentos y fin de cuotas).
+FUENTE = "manual_politicas_v2"
+# Prefijo común a todas las versiones del corpus. Se usa en --reset para no
+# dejar chunks de una versión anterior compitiendo en la búsqueda semántica.
+PREFIJO_FUENTE = "manual_politicas"
 TAMANO_LOTE = 20  # inserciones por request; suficiente para este corpus
 
 # -----------------------------------------------------------------------------
@@ -176,7 +182,162 @@ DOCUMENTOS: List[Dict[str, Any]] = [
         "metadata": {"tema": "reconexion", "escenario_reto": 3},
     },
 
+    # --- CAMBIO DE PLAN (sin prorrateo como causa principal) -----------------
+    {
+        "categoria": "CAMBIO_PLAN",
+        "contenido": (
+            "Cambio del cargo recurrente del plan: cuando el concepto de plan facturado "
+            "cambia de un ciclo a otro, el recibo refleja la tarifa del plan nuevo. El "
+            "detalle del recibo muestra la descripción del plan vigente en cada periodo, "
+            "así que la diferencia se puede verificar comparando ambas descripciones y sus "
+            "importes. Si el cambio ocurrió a mitad de ciclo, además aparecerán cargos "
+            "proporcionales; si ocurrió al inicio del ciclo, solo cambia el cargo fijo."
+        ),
+        "metadata": {"tema": "cambio_plan", "escenario_reto": 5},
+    },
+    {
+        "categoria": "CAMBIO_PLAN",
+        "contenido": (
+            "Renta adelantada y renta vencida: el catálogo de ofertas indica el tipo de "
+            "renta de cada plan. En renta adelantada el ciclo se cobra antes de consumirlo; "
+            "en renta vencida se cobra después de consumirlo. Al migrar entre planes con "
+            "tipos de renta distintos, el primer recibo puede incluir conceptos de ambos "
+            "esquemas, lo que explica que el monto de ese ciclo no coincida con la tarifa "
+            "de lista de ninguno de los dos planes."
+        ),
+        "metadata": {"tema": "tipo_renta", "escenario_reto": 5},
+    },
+
+    # --- PAQUETES Y SERVICIOS ADICIONALES ------------------------------------
+    {
+        "categoria": "COMPRA_PAQUETE",
+        "contenido": (
+            "Paquetes y servicios adicionales: los paquetes de datos, bloques de canales y "
+            "servicios de valor agregado se facturan aparte del cargo fijo del plan. Un "
+            "paquete de un solo uso aparece únicamente en el recibo del ciclo en que se "
+            "compró; un paquete recurrente se repite cada ciclo hasta que se desactiva. "
+            "Cada paquete figura como una línea propia en el detalle del recibo."
+        ),
+        "metadata": {"tema": "paquetes"},
+    },
+    {
+        "categoria": "COMPRA_PAQUETE",
+        "contenido": (
+            "Alquiler de equipos y puntos adicionales: los puntos adicionales de televisión, "
+            "repetidores de señal y otros equipos en alquiler generan un cargo recurrente "
+            "mientras el servicio esté activo. No son cuotas de financiamiento: no tienen un "
+            "número definido de pagos y se dejan de cobrar cuando se solicita la baja del "
+            "servicio adicional."
+        ),
+        "metadata": {"tema": "paquetes"},
+    },
+
+    # --- CONSUMO FUERA DEL PLAN ----------------------------------------------
+    {
+        "categoria": "TRAFICO_ADICIONAL",
+        "contenido": (
+            "Consumo adicional fuera del plan: cuando se supera lo incluido en el plan o se "
+            "usa un servicio no comprendido en él, se factura como consumo adicional. Se "
+            "cobra por uso efectivo del periodo, así que varía de un ciclo a otro y no es un "
+            "cargo recurrente. Aparece en el detalle del recibo con el tipo de consumo que "
+            "lo originó."
+        ),
+        "metadata": {"tema": "trafico_adicional"},
+    },
+    {
+        "categoria": "TRAFICO_ADICIONAL",
+        "contenido": (
+            "Roaming internacional y larga distancia: el uso del servicio en el extranjero y "
+            "las llamadas de larga distancia se facturan según el destino y el consumo del "
+            "periodo, salvo que exista un paquete específico que los cubra. Al ser cargos "
+            "por uso, solo aparecen en los recibos de los ciclos en que hubo consumo y no se "
+            "repiten en los siguientes."
+        ),
+        "metadata": {"tema": "roaming"},
+    },
+
+    # --- NOTAS DE CRÉDITO Y DÉBITO ------------------------------------------
+    {
+        "categoria": "NOTA_CREDITO_AJUSTE",
+        "contenido": (
+            "Notas de crédito: una nota de crédito es un ajuste que reduce el monto "
+            "facturado. Se emite para corregir un cobro que no correspondía, aplicar una "
+            "compensación acordada o reversar un concepto ya facturado. Se asocia al ciclo "
+            "de facturación en que se emitió y al concepto que corrige, por lo que su efecto "
+            "se ve reflejado en el recibo de ese ciclo."
+        ),
+        "metadata": {"tema": "notas_credito"},
+    },
+    {
+        "categoria": "NOTA_CREDITO_AJUSTE",
+        "contenido": (
+            "Notas de débito: una nota de débito es un ajuste que incrementa el monto "
+            "facturado, y se emite cuando un concepto quedó sin cobrar o se cobró por debajo "
+            "de lo que correspondía. Tanto las notas de crédito como las de débito responden "
+            "a exigencias contables y tributarias: cada ajuste queda documentado con su "
+            "fecha efectiva y su importe, y se puede verificar contra el recibo del ciclo."
+        ),
+        "metadata": {"tema": "notas_debito"},
+    },
+
+    # --- NUEVOS DESCUENTOS Y FIN DE CUOTAS ----------------------------------
+    {
+        "categoria": "NUEVO_DESCUENTO",
+        "contenido": (
+            "Nuevo descuento o bonificación aplicada: cuando se activa un descuento de "
+            "fidelización, retención o captación, aparece en el recibo como una línea con "
+            "importe negativo que reduce el total. La descripción del concepto suele indicar "
+            "la duración pactada del beneficio, por ejemplo un porcentaje o un monto fijo "
+            "durante un número determinado de meses."
+        ),
+        "metadata": {"tema": "nuevo_descuento"},
+    },
+    {
+        "categoria": "FIN_CUOTAS_EQUIPO",
+        "contenido": (
+            "Fin del financiamiento de un equipo: al pagarse la última cuota pactada, el "
+            "concepto de financiamiento desaparece del recibo y el monto total baja sin que "
+            "el cliente tenga que hacer ningún trámite. Esta bajada es esperada y definitiva: "
+            "el cargo no reaparecerá en los ciclos siguientes salvo que se adquiera un nuevo "
+            "equipo financiado."
+        ),
+        "metadata": {"tema": "cuota_equipo", "escenario_reto": 2},
+    },
+
     # --- POLÍTICAS GENERALES ------------------------------------------------
+    {
+        "categoria": "GENERAL",
+        "contenido": (
+            "Lectura del detalle de un recibo por grupos de cargo: el detalle agrupa los "
+            "conceptos según su naturaleza (cargo fijo del plan, cargo proporcional por días "
+            "de uso, cargo por reconexión, paquetes, consumo adicional, bonos y descuentos). "
+            "Comparar el mismo grupo entre dos recibos consecutivos permite aislar qué parte "
+            "del recibo cambió, en lugar de comparar únicamente el monto total."
+        ),
+        "metadata": {"tema": "composicion_recibo"},
+    },
+    {
+        "categoria": "GENERAL",
+        "contenido": (
+            "Bonos con cargo y contrapartida: algunos beneficios se registran en el recibo "
+            "con dos líneas, una positiva por el valor referencial del bono y otra negativa "
+            "que lo compensa. El efecto neto de ese par de líneas es lo que realmente afecta "
+            "al monto a pagar, así que la explicación debe basarse en el neto y no en la "
+            "línea positiva leída de forma aislada."
+        ),
+        "metadata": {"tema": "composicion_recibo"},
+    },
+    {
+        "categoria": "GENERAL",
+        "contenido": (
+            "Estado de deuda del recibo: el recibo informa explícitamente si la cuenta "
+            "registra deuda pendiente y su fecha de vencimiento. Cuando ese dato no está "
+            "disponible, corresponde declararlo así al cliente en lugar de deducir un saldo: "
+            "afirmar que no hay deuda sin el dato verificado es tan incorrecto como inventar "
+            "un monto."
+        ),
+        "metadata": {"tema": "deuda"},
+    },
     {
         "categoria": "GENERAL",
         "contenido": (
@@ -327,10 +488,19 @@ def ingest(reset: bool = False, dry_run: bool = False) -> int:
     client = _crear_cliente()
 
     if reset:
-        print(f"Eliminando registros previos de la fuente '{FUENTE}'...")
+        # Se eliminan TODAS las versiones de este corpus, no solo la actual.
+        # Borrar únicamente los registros de FUENTE dejaría vivos los chunks de
+        # versiones anteriores (manual_politicas_v1), que seguirían compitiendo
+        # en la búsqueda por similitud con textos ya desactualizados.
+        print(f"Eliminando versiones previas del corpus (prefijo '{PREFIJO_FUENTE}')...")
         try:
-            client.table("documentos_politicas").delete().eq("fuente", FUENTE).execute()
-            print("Registros previos eliminados.")
+            respuesta = (
+                client.table("documentos_politicas")
+                .delete()
+                .like("fuente", f"{PREFIJO_FUENTE}%")
+                .execute()
+            )
+            print(f"Registros previos eliminados: {len(respuesta.data or [])}")
         except Exception as e:
             print(f"[ERROR] No se pudieron eliminar los registros previos: {e}")
             sys.exit(1)

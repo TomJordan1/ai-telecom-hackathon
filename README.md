@@ -115,7 +115,7 @@ ai-telecom-hackathon/
 │   │   ├── config.py                 # Configuración por variables de entorno
 │   │   └── schemas.py                # Modelos Pydantic de request/response
 │   ├── db/
-│   │   ├── models.py                 # 8 tablas SQLAlchemy
+│   │   ├── models.py                 # Tablas del dataset + tablas operacionales
 │   │   ├── database.py               # Engine agnóstico al motor + migraciones ligeras
 │   │   └── crud.py                   # Acceso a datos y lógica de memoria
 │   ├── api/
@@ -137,8 +137,14 @@ ai-telecom-hackathon/
 │   │   ├── whatsapp_sender.py        # Envío por WhatsApp Cloud API
 │   │   └── telegram_sender.py        # Envío por Telegram Bot API
 │   └── static/                       # Chat web + panel de administración
+├── disclaimer/                       # Dataset del desafío (5 CSV + diccionario)
 ├── scripts/
-│   ├── generate_mock_data.py         # Seed de datos de prueba
+│   ├── ingest_real_data.py           # Ingesta del dataset con cobertura de escenarios
+│   ├── verify_engine.py              # Verifica el motor y sus invariantes contra la base
+│   ├── smoke_chat.py                 # Prueba de humo de POST /chat por escenario
+│   ├── find_scenarios.py             # Busca cuentas por escenario en el CSV completo
+│   ├── db_status.py                  # Tablas existentes y conteo de filas
+│   ├── reset_db.py                   # Limpieza de esquema y de estado conversacional
 │   ├── setup_supabase.sql            # Esquema pgvector + función RPC de búsqueda
 │   ├── ingest_supabase.py            # Ingesta de políticas al índice vectorial
 │   └── telegram_bot.py               # Bot de Telegram (proceso aparte)
@@ -248,25 +254,48 @@ python -c "from app.db.database import engine; print('conectado a', engine.diale
 
 Debe imprimir `conectado a postgresql`. Si falla por autenticación, la contraseña es la de la base de datos, no la de tu cuenta de Supabase; se puede resetear en esa misma pantalla.
 
-### Paso 6: sembrar datos de prueba
+### Paso 6: ingestar el dataset del desafío
+
+Los datos vienen del dataset real entregado en el reto, en `disclaimer/`. No hay generación de datos ficticios: si un dato no está en el dataset, el sistema no lo afirma.
 
 ```powershell
-python scripts/generate_mock_data.py
+python scripts/ingest_real_data.py --reset
 ```
 
-Crea las 8 tablas si no existen y siembra cinco clientes con seis recibos cada uno (mes actual + 5 previos, el mismo horizonte que muestra la App Mi Movistar según el brief), uno por escenario:
+| Archivo de `disclaimer/` | Tabla | Contenido |
+|---|---|---|
+| `FACTURACION_CLIENTES.csv` | `facturacion_clientes` | Cargos individuales por cuenta y ciclo |
+| `PLANTA_CLIENTES.csv` | `planta_clientes` | Servicios activos de cada cuenta |
+| `CATALOGO_OFERTAS.csv` | `catalogo_ofertas` | Tarifa oficial (`rate_final`) y tipo de renta por código de cargo |
+| `ORDENES.csv` | `ordenes_cliente` | Historial CRM: suspensiones, reconexiones, cambios, altas |
+| `NOTAS_CREDITO.csv` | `notas_credito` | Notas de crédito (`CRD`) y débito (`DSC`) |
 
-| `user_id` | Escenario |
+La identidad del cliente es su **cuenta financiera** (`FINANCIAL_ACCOUNT` en la planta, `FINANCIAL_ACCOUNT_KEY` en facturación): la facturación se emite por cuenta y agrupa todas sus líneas móvil, internet, voz y TV.
+
+Opciones:
+
+| Flag | Efecto |
 |---|---|
-| `user_a_fin_promo` | Fin de promoción |
-| `user_b_prorrateo` | Prorrateo por cambio de plan |
-| `user_c_equipo` | Cuota de equipo financiado |
-| `user_d_reconexion` | Reconexión por morosidad |
-| `user_e_alerta_proactiva` | Promoción venciendo en 5 días |
+| `--reset` | Vacía las tablas del dataset antes de insertar. Sin él, el script no hace nada si ya hay cargos. |
+| `--max-users N` | Cuántas cuentas cargar. Por defecto 1000; `0` carga las 18 471 del archivo. |
 
-También carga el catálogo de planes, las reglas de cumplimiento y contactos con números ficticios.
+La selección de cuentas **no** es "las primeras N del archivo". Los escenarios del reto no están repartidos de forma uniforme (hay 1652 cuentas con prorrateo pero solo 17 con cuota de equipo financiado), así que el script clasifica las cuentas con el mismo motor que usa la aplicación y reserva una cuota por escenario antes de rellenar hasta el límite. De otro modo habría escenarios imposibles de demostrar.
 
-El script es idempotente respecto al catálogo: si `catalogo_planes` ya tiene filas, no inserta nada y avisa. Si necesitas resembrar desde cero, vacía primero esa tabla o usa una base nueva.
+Para ver qué cuentas de la base sirven para cada escenario:
+
+```powershell
+python scripts/verify_engine.py
+```
+
+Además de listar una cuenta de ejemplo por evento, comprueba que la descomposición de la variación cuadre al céntimo con la diferencia entre recibos. Con `--detalle EVENTO` imprime el payload completo que recibiría el modelo.
+
+Otros scripts de datos:
+
+| Script | Para qué |
+|---|---|
+| `scripts/db_status.py` | Qué tablas existen y cuántas filas tiene cada una |
+| `scripts/reset_db.py` | Eliminar tablas obsoletas, vaciar el estado conversacional o recrear el esquema |
+| `scripts/find_scenarios.py` | Buscar cuentas por escenario en el CSV completo, antes de ingerir |
 
 ### Paso 7: levantar el servidor
 
@@ -297,15 +326,27 @@ Debe responder algo como:
 {"status":"ok","project":"Copiloto de Transparencia (Lucía)","version":"0.2.0"}
 ```
 
-Y una consulta completa de facturación:
+Y una consulta completa de facturación. Primero pide una cuenta con historial:
+
+```powershell
+curl.exe http://127.0.0.1:8000/api/v1/cuenta-demo
+```
+
+Con esa cuenta:
 
 ```powershell
 curl.exe -X POST http://127.0.0.1:8000/api/v1/chat `
   -H "Content-Type: application/json" `
-  -d '{"session_id":"prueba-1","user_id":"user_a_fin_promo","message":"por que subio mi recibo?"}'
+  -d '{"session_id":"prueba-1","user_id":"<CUENTA>","message":"por que subio mi recibo?"}'
 ```
 
-En la respuesta, `intent_category` debe ser `FIN_PROMOCION` y `requires_human_intervention` debe ser `false`. Si en cambio devuelve `DERIVACION_INCERTIDUMBRE`, es que no encuentra recibos para ese cliente: revisa que el paso 6 haya corrido contra la misma base que apunta `DATABASE_URL`.
+En la respuesta, `intent_category` debe ser el evento que el motor detectó para esa cuenta (`FIN_PROMOCION`, `PRORRATEO_CAMBIO_PLAN`, `CUOTA_EQUIPO`…) y `requires_human_intervention` debe ser `false`. Si devuelve `DERIVACION_INCERTIDUMBRE`, es que no encuentra recibos para esa cuenta: revisa que el paso 6 haya corrido contra la misma base que apunta `DATABASE_URL`.
+
+Para validar los ocho escenarios de golpe, con el servidor levantado:
+
+```powershell
+python scripts/smoke_chat.py
+```
 
 ### Problemas frecuentes
 
@@ -434,10 +475,12 @@ DeepSeek se consume a través de la interfaz compatible con OpenAI, y la salida 
 
 ### `POST /api/v1/chat`
 
+`user_id` es la cuenta financiera del cliente (`FINANCIAL_ACCOUNT`).
+
 ```json
 {
   "session_id": "demo-1",
-  "user_id": "user_a_fin_promo",
+  "user_id": "102917145",
   "message": "por que subio mi recibo?",
   "channel": "web"
 }
@@ -452,11 +495,33 @@ Respuesta abreviada:
   "sentiment_score": 3,
   "messages": [
     { "text": "¡Hola! Soy Lucía...", "delay_ms": 0, "type": "hook" },
-    { "text": "Tu recibo subió S/ 20.00 porque...", "delay_ms": 1000, "type": "explanation" }
+    { "text": "Tu recibo subió S/ 16.58 porque...", "delay_ms": 1000, "type": "explanation" }
   ],
+  "historical_bills_summary": [
+    { "month": "2026-06", "amount": 66.32, "ciclo": "20260605" }
+  ],
+  "current_bill_breakdown": [
+    {
+      "categoria": "PLAN",
+      "etiqueta": "cargo fijo de tu plan",
+      "monto": 82.90,
+      "conceptos": ["Plan Elige mas S/ 82.90"]
+    }
+  ],
+  "variation_breakdown": [
+    {
+      "categoria": "DESCUENTO",
+      "etiqueta": "descuentos aplicados",
+      "monto_anterior": -16.58,
+      "monto_actual": 0.0,
+      "impacto": 16.58,
+      "conceptos": ["Descuento 20% por 3 meses"]
+    }
+  ],
+  "billing_adjustments": null,
   "upcoming_alerts": [],
   "plan_optimizer_suggestion": { "available": false },
-  "confidence_score": 80,
+  "confidence_score": 90,
   "caso_validado": false,
   "compliance_triggered": false
 }
@@ -464,7 +529,28 @@ Respuesta abreviada:
 
 Los `messages` vienen troceados con un `delay_ms` cada uno, para que el cliente los muestre de forma escalonada en lugar de un bloque único.
 
-`intent_category`, en turnos de facturación, es el evento detectado por el motor determinista (`FIN_PROMOCION`, `PRORRATEO_CAMBIO_PLAN`, `CUOTA_EQUIPO`, `RECONEXION_MOROSIDAD`, `REDUCCION_TARIFA`, `SIN_CAMBIOS`), no una etiqueta generada por el modelo. Es un valor estable sobre el que se puede programar.
+`current_bill_breakdown` responde a "¿qué me están cobrando?" y `variation_breakdown` a "¿por qué cambió?". Ambos los calcula el motor determinista y el orquestador los sobrescribe después de generar el texto, así que el modelo no puede alterarlos. **La suma de los `impacto` de `variation_breakdown` equivale exactamente a la variación del recibo**, lo que hace que cada explicación sea auditable al céntimo. `conceptos` cita las descripciones literales de los cargos del recibo.
+
+`billing_adjustments` aparece cuando el ciclo tuvo notas de crédito o débito, con el total de cada tipo.
+
+`intent_category`, en turnos de facturación, es el evento detectado por el motor determinista, no una etiqueta generada por el modelo. Es un valor estable sobre el que se puede programar:
+
+| Evento | Significado |
+|---|---|
+| `PRORRATEO_CAMBIO_PLAN` | Cobro proporcional por días de uso |
+| `CUOTA_EQUIPO` | Cuota de un equipo financiado |
+| `FIN_CUOTAS_EQUIPO` | Se pagó la última cuota y el cargo desapareció |
+| `RECONEXION_MOROSIDAD` | Cargo por reconexión tras suspensión |
+| `FIN_PROMOCION` | Un descuento o bono dejó de aplicarse |
+| `NUEVO_DESCUENTO` | Se activó un descuento nuevo |
+| `CAMBIO_PLAN` | Cambió el cargo recurrente del plan |
+| `COMPRA_PAQUETE` | Paquetes o servicios adicionales |
+| `TRAFICO_ADICIONAL` | Consumo fuera del plan, roaming o larga distancia |
+| `NOTA_CREDITO_AJUSTE` | Ajuste por nota de crédito o débito |
+| `REDUCCION_TARIFA` | Bajó el monto sin una causa más específica |
+| `SIN_CAMBIOS` | El recibo no varió |
+| `NUEVO_CLIENTE` | Solo hay un ciclo, no hay con qué comparar |
+| `INCREMENTO_OTROS` | Subió sin causa atribuible: eleva la incertidumbre |
 
 `caso_validado` es la señal visible del ciclo de aprendizaje: `true` si la respuesta reutilizó una solución ya aprobada en `base_casos` (el chat web la muestra como una insignia verde), `false` si se generó desde cero porque todavía no hay conocimiento validado para ese patrón (insignia ámbar). `confidence_score` sube de forma medible entre ambos casos — normalmente de 80% a 100% para el mismo tipo de consulta, una vez que un asesor valida el caso desde el panel de administración.
 
@@ -564,17 +650,31 @@ Consideraciones en planes gratuitos con recursos acotados:
 
 ## Escenarios de prueba
 
-Desde el chat web, seleccionando cada cliente:
+Las cuentas no están escritas en el código: son cuentas financieras reales del dataset. Para saber cuál sirve para cada escenario:
 
-| Cliente | Mensaje |
-|---|---|
-| `user_a_fin_promo` | ¿Por qué subió mi recibo este mes? |
-| `user_b_prorrateo` | ¿Por qué me cobraron dos montos distintos? |
-| `user_c_equipo` | ¿Qué es este cargo de cuota de equipo? |
-| `user_d_reconexion` | ¿Por qué tengo un cargo de reconexión? |
-| `user_e_alerta_proactiva` | Mi recibo está igual, ¿todo bien? |
+```powershell
+python scripts/verify_engine.py
+```
 
-El último es el más ilustrativo: responde que no hay cambios y avisa que el descuento vence en cinco días con el impacto estimado, calculado por el motor determinista y no por el modelo.
+Devuelve una cuenta de ejemplo por evento detectado. Con esa cuenta, desde el chat web:
+
+| Escenario del reto | Evento | Mensaje |
+|---|---|---|
+| (a) Prorrateos | `PRORRATEO_CAMBIO_PLAN` | ¿Por qué me cobraron dos montos distintos? |
+| (b) Cuota de equipo financiado | `CUOTA_EQUIPO` | ¿Qué es este cargo de cuota de equipo? |
+| (c) Reconexión tras suspensión | `RECONEXION_MOROSIDAD` | ¿Por qué tengo un cargo de reconexión? |
+| (d) Fin de descuentos | `FIN_PROMOCION` | ¿Por qué subió mi recibo este mes? |
+| (e) Cambio de plan | `CAMBIO_PLAN` | ¿Por qué cambió el monto de mi plan? |
+| Paquetes | `COMPRA_PAQUETE` | ¿Qué paquetes me están cobrando? |
+| Consumo fuera del plan | `TRAFICO_ADICIONAL` | ¿Por qué me cobran consumo adicional? |
+| Ajuste financiero | `NOTA_CREDITO_AJUSTE` | ¿Por qué bajó mi recibo este mes? |
+
+Sobre la muestra cargada por defecto (1000 cuentas), la distribución de eventos es aproximadamente: 488 sin cambios, 120 prorrateos, 76 cambios de plan, 62 fin de promoción, 51 reconexiones, 50 reducciones de tarifa, 42 paquetes, 40 consumo adicional, 21 nuevos descuentos, 17 cuotas de equipo y 3 ajustes por nota de crédito.
+
+Consultas que se responden con un dato verificado del recibo, sin pasar por el modelo:
+
+- *"¿tengo deuda?"* → lee la columna `DEUDA` del recibo y su fecha de vencimiento. Si el dato no está, lo dice en lugar de deducir un saldo.
+- *"¿qué plan tengo?"* → identifica el cargo de plan de mayor importe del ciclo.
 
 Para ver las salvaguardas:
 
@@ -588,13 +688,25 @@ Para ver el ciclo de aprendizaje (el diferenciador del producto) en vivo, sigue 
 
 ## Limitaciones conocidas
 
-- **Sin autenticación del cliente**: no se verifica la identidad de quien escribe. En WhatsApp, un número no registrado en `contactos_usuario` cae a un cliente de respaldo. Un flujo productivo debería pedir un documento de identidad más un segundo factor antes de exponer datos de facturación.
+- **Sin autenticación del cliente**: no se verifica la identidad de quien escribe. Basta con enviar una cuenta financiera válida para ver su facturación, y en WhatsApp un número no registrado en `contactos_usuario` cae a una cuenta de demostración. Un flujo productivo debería pedir un documento de identidad más un segundo factor antes de exponer datos de facturación.
 - **Sin autenticación de la API**: ningún endpoint la requiere, incluidos los de administración, y el CORS está abierto. Revisar antes de cualquier exposición pública estable.
 - **Alertas y seguimientos manuales**: no hay planificador de tareas; se disparan por endpoint.
-- **Corpus de políticas acotado**: la búsqueda vectorial es real, pero el corpus son los 16 fragmentos del script de ingesta. Un caso productivo requeriría los manuales completos y calibrar el umbral con datos reales.
+- **Corpus de políticas acotado**: la búsqueda vectorial es real, pero el corpus son los 29 fragmentos del script de ingesta, redactados a partir de los conceptos que aparecen en el dataset. Un caso productivo requeriría los manuales de facturación completos y calibrar el umbral con datos reales.
 - **Sin filtro por categoría en el orquestador**: el retriever lo soporta, pero se consultan todas las categorías para no perder cobertura.
 - **Migraciones manuales**: no se usa Alembic; las columnas nuevas se agregan en `run_lightweight_migrations()`.
 - **`base_casos` empieza vacía**: el ciclo de aprendizaje requiere que un agente valide casos desde el panel antes de que exista conocimiento reutilizable.
+
+### Límites que impone el dataset
+
+Estas no son decisiones de diseño, son restricciones de los datos entregados. Se documentan porque determinan qué puede y qué no puede afirmar el sistema:
+
+- **Sin fecha exacta de fin de promoción.** El dataset no trae esa columna. La duración pactada se lee de la descripción del cargo (`"por 6 M"`, `"x 12m"`) y se cruza con los ciclos ya facturados, así que las alertas se expresan en ciclos, no en días. `dias_restantes` viaja en `null` en lugar de rellenarse con un número inventado.
+- **Capacidad del plan casi nunca declarada.** Solo 6 de los 159 planes con tarifa en el catálogo indican los GB incluidos en su descripción. Por eso la recomendación comercial tiene dos criterios: más capacidad cuando ambos planes la declaran, y menor tarifa dentro del mismo tipo de renta cuando no. Si ninguno es demostrable, no se ofrece nada.
+- **`PERIOD_START_DATE` y `PERIOD_END_DATE` llegan corruptos** (literal `00:00.0`). Como referencia de período se usa `FECHA-VENCIMIENTO`, y si tampoco es válida, el mes de emisión del ciclo.
+- **Acentos con mojibake en el CSV** (`Facturaci¾n`, `mßs`). El motor normaliza esos caracteres al clasificar para que la detección no dependa del encoding, pero las descripciones se citan tal como vienen.
+- **`PRIMARY_RESOURCE_VALUE` no existe** en `FACTURACION_CLIENTES.csv` aunque el diccionario de datos lo documenta. No hay teléfono en facturación; el único identificador de línea es `SUBSCRIBER_KEY`, y el teléfono llega solo como hash en la planta.
+- **Tres tablas documentadas sin datos.** El diccionario describe `BRAINY_DESCUENTOS_CUOTAS`, `BRAINY_PRORRATEO` y `BRAINY_RECONEXIONES`, pero no se entregaron sus CSV. Traían justo lo que aquí hay que derivar: duración y número de cuota actual, importe del prorrateo con su período, y fecha de corte y reconexión. Con esas tablas, las explicaciones de prorrateo, cuotas y reconexión podrían citar fechas exactas en vez de ciclos.
+- **El diccionario dice `CDR` para nota de crédito, pero el dato real es `CRD`.** El código acepta ambos.
 
 ## Licencia
 

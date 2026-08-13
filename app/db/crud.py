@@ -1,20 +1,136 @@
 import re
-
+from datetime import datetime
+from sqlalchemy import desc, distinct, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.db import models
 
+
+class VirtualRecibo:
+    """Wrapper virtual para agrupar cargos de facturacion_clientes por ciclo."""
+    def __init__(self, ciclo: str, cargos: list):
+        self.ciclo = str(ciclo or "")
+        self.mes_emision = f"{self.ciclo[:4]}-{self.ciclo[4:6]}" if len(self.ciclo) >= 6 else "2026-01"
+        self.monto_total = round(sum(float(c.charge_total_amount or 0.0) for c in cargos), 2)
+        try:
+            self.fecha_emision = datetime(int(self.ciclo[:4]), int(self.ciclo[4:6]), 1) if len(self.ciclo) >= 6 else datetime(2026, 1, 1)
+        except ValueError:
+            self.fecha_emision = datetime(2026, 1, 1)
+        self.plan_actual = None
+
+        cargos_dict = []
+        for c in cargos:
+            cargos_dict.append({
+                "CHARGE_CODE_ID": c.charge_code_id,
+                "CHARGE_CODE_DESC": c.charge_code_desc,
+                "CHARGE_CODE_CLASSIFICATION": c.charge_code_classification,
+                "CHARGE_TOTAL_AMOUNT": c.charge_total_amount,
+                "CHARGE_NET_AMOUNT": c.charge_net_amount,
+                "GRUPO": c.grupo,
+                "SUB_GRUPO": c.sub_grupo,
+            })
+
+        first = cargos[0] if cargos else None
+        info_factura = {
+            "CUSTOMER_KEY": getattr(first, "customer_key", ""),
+            "BILLING_ARRANGEMENT_KEY": getattr(first, "billing_arrangement_key", ""),
+            "LEGAL_INVOICE_NUMBER": getattr(first, "legal_invoice_number", ""),
+            "BILLING_CYCLE_KEY": getattr(first, "billing_cycle_key", ""),
+            "SUBSCRIBER_KEY": getattr(first, "subscriber_key", ""),
+            "PERIOD_START_DATE": getattr(first, "period_start_date", ""),
+            "PERIOD_END_DATE": getattr(first, "period_end_date", ""),
+            "FECHA_VENCIMIENTO": getattr(first, "fecha_vencimiento", ""),
+            "DEUDA": getattr(first, "deuda", ""),
+        }
+        self.conceptos_facturados = {
+            "cargos": cargos_dict,
+            "info_factura": info_factura,
+        }
+
+
+def get_cargos_por_usuario(db: Session, account_id: str, limit_ciclos: int = 6):
+    """
+    Recupera los cargos facturados directamente de facturacion_clientes para una cuenta,
+    agrupados por los ciclos más recientes.
+    """
+    if not account_id:
+        return []
+    ciclos = db.query(models.FacturacionCliente.ciclo)\
+              .filter(models.FacturacionCliente.financial_account_key == str(account_id))\
+              .distinct()\
+              .order_by(models.FacturacionCliente.ciclo.desc())\
+              .limit(limit_ciclos)\
+              .all()
+    lista_ciclos = [c[0] for c in ciclos if c[0]]
+    if not lista_ciclos:
+        return []
+
+    cargos = db.query(models.FacturacionCliente)\
+               .filter(
+                   models.FacturacionCliente.financial_account_key == str(account_id),
+                   models.FacturacionCliente.ciclo.in_(lista_ciclos)
+               )\
+               .order_by(models.FacturacionCliente.ciclo.desc())\
+               .all()
+
+    by_ciclo = {}
+    for c in cargos:
+        by_ciclo.setdefault(c.ciclo, []).append(c)
+
+    # Mantener el orden descendente de ciclo
+    res = []
+    for c_id in lista_ciclos:
+        if c_id in by_ciclo:
+            res.append(VirtualRecibo(c_id, by_ciclo[c_id]))
+    return res
+
+
 def get_recibos_by_user(db: Session, user_id: str, limit: int = 6):
-    return db.query(models.ReciboCliente)\
-             .filter(models.ReciboCliente.user_id == user_id)\
-             .order_by(models.ReciboCliente.fecha_emision.desc())\
-             .limit(limit)\
-             .all()
+    return get_cargos_por_usuario(db, user_id, limit_ciclos=limit)
+
 
 def get_all_user_ids(db: Session):
-    """Lista todos los user_id distintos que tienen al menos un recibo."""
-    rows = db.query(models.ReciboCliente.user_id).distinct().all()
-    return [r[0] for r in rows]
+    """Lista todos los financial_account_key distintos que tienen cargos facturados."""
+    rows = db.query(models.FacturacionCliente.financial_account_key).distinct().all()
+    return [r[0] for r in rows if r[0]]
+
+
+# Cache de proceso: la consulta de cuenta demo recorre la tabla de facturación
+# y no tiene sentido repetirla en cada mensaje entrante de un canal externo.
+_cuenta_demo_cache: str | None = None
+
+
+def get_cuenta_demo(db: Session):
+    """
+    Resuelve una cuenta financiera real con historial suficiente para demostrar
+    una explicación de variación (la que más ciclos facturados tiene).
+
+    Se usa como respaldo cuando un canal externo recibe un mensaje de alguien
+    que no está registrado en contactos_usuario. Antes había un identificador
+    del set de datos ficticio escrito en el código, que dejó de existir al
+    migrar al dataset real y hacía fallar la conversación.
+    """
+    global _cuenta_demo_cache
+    if _cuenta_demo_cache:
+        return _cuenta_demo_cache
+
+    from app.core.config import settings
+
+    if settings.DEMO_ACCOUNT_ID:
+        _cuenta_demo_cache = str(settings.DEMO_ACCOUNT_ID)
+        return _cuenta_demo_cache
+
+    fila = (
+        db.query(
+            models.FacturacionCliente.financial_account_key,
+            func.count(distinct(models.FacturacionCliente.ciclo)).label("ciclos"),
+        )
+        .group_by(models.FacturacionCliente.financial_account_key)
+        .order_by(desc("ciclos"))
+        .first()
+    )
+    _cuenta_demo_cache = fila[0] if fila else None
+    return _cuenta_demo_cache
 
 
 def get_contacto_usuario(db: Session, user_id: str):
@@ -313,9 +429,6 @@ def append_turno_conversacion(db: Session, session_id: str, role: str, text: str
 def get_terminos_restringidos(db: Session):
     return db.query(models.TerminosRestringidos).all()
 
-def get_catalogo_planes(db: Session):
-    return db.query(models.CatalogoPlanes).filter(models.CatalogoPlanes.activo == True).all()
-
 # --- Observabilidad ---
 
 def create_audit_log(db: Session, **kwargs):
@@ -429,3 +542,130 @@ def get_ordenes_por_customer_key(db: Session, customer_key: str, limit: int = 10
     return db.query(models.OrdenCliente).filter(
         models.OrdenCliente.customer_key == customer_key
     ).order_by(models.OrdenCliente.start_date.desc()).limit(limit).all()
+
+
+# --- Notas de crédito ---
+
+def get_notas_credito_por_ba_no(db: Session, ba_no: str, limit: int = 10):
+    if not ba_no:
+        return []
+    return db.query(models.NotaCredito).filter(
+        models.NotaCredito.ba_no == str(ba_no)
+    ).order_by(models.NotaCredito.effective_date.desc()).limit(limit).all()
+
+
+def get_notas_credito_por_customer_key(db: Session, customer_key: str, limit: int = 10):
+    if not customer_key:
+        return []
+    return db.query(models.NotaCredito).filter(
+        models.NotaCredito.receiver_customer == str(customer_key)
+    ).order_by(models.NotaCredito.effective_date.desc()).limit(limit).all()
+
+
+# --- Planta de clientes ---
+
+def get_planta_por_financial_account(db: Session, account_id: str):
+    if not account_id:
+        return []
+    return db.query(models.PlantaCliente).filter(
+        models.PlantaCliente.financial_account == str(account_id)
+    ).all()
+
+
+# --- Catálogo de ofertas ---
+
+def get_oferta_por_charge_code(db: Session, charge_code: str):
+    if not charge_code:
+        return None
+    return db.query(models.CatalogoOfertas).filter(
+        models.CatalogoOfertas.charge_code == str(charge_code)
+    ).first()
+
+
+def get_ofertas_por_charge_codes(db: Session, charge_codes):
+    """
+    Resuelve varias tarifas del catálogo en una sola consulta.
+    Devuelve {charge_code: CatalogoOfertas}. Evita el N+1 que provocaba
+    llamar a get_oferta_por_charge_code dentro de un bucle de cargos.
+    """
+    codigos = [str(c) for c in (charge_codes or []) if c]
+    if not codigos:
+        return {}
+    filas = db.query(models.CatalogoOfertas).filter(
+        models.CatalogoOfertas.charge_code.in_(codigos)
+    ).all()
+    return {f.charge_code: f for f in filas}
+
+
+def get_notas_credito_por_ciclo(db: Session, ba_no: str, ciclo: str):
+    """
+    Notas de crédito (CRD) y débito (DSC) emitidas en un ciclo concreto.
+
+    Es la pieza que permite explicar una variación por ajuste financiero:
+    sin filtrar por ciclo no se puede atribuir la nota al recibo que el
+    cliente está consultando.
+    """
+    if not ba_no or not ciclo:
+        return []
+    return db.query(models.NotaCredito).filter(
+        models.NotaCredito.ba_no == str(ba_no),
+        models.NotaCredito.ciclo == str(ciclo),
+    ).all()
+
+
+# Clasificaciones reales del dataset que identifican el cargo recurrente del
+# plan principal. Se usan para construir el catálogo de planes ofertables a
+# partir de cargos realmente facturados, en vez de un listado inventado.
+CLASIFICACIONES_PLAN = (
+    "Cargo Recurrente De Plan",
+    "PLAN_Fija",
+    "Cargo Recurrente Corp De Plan",
+)
+
+
+def get_planes_ofertables(db: Session, limit: int = 400):
+    """
+    Construye el catálogo de planes candidatos para recomendación cruzando
+    dos fuentes reales:
+
+      - facturacion_clientes: descripción legible del plan (CHARGE_CODE_DESC)
+        de los cargos realmente clasificados como cargo recurrente de plan.
+      - catalogo_ofertas: tarifa oficial (rate_final) y tipo de renta.
+
+    Solo se devuelven planes que existen en AMBAS tablas: si un charge code no
+    tiene tarifa en el catálogo oficial, no hay precio verificable que ofrecer
+    y queda fuera. Devuelve una lista de dicts.
+    """
+    filas = (
+        db.query(
+            models.FacturacionCliente.charge_code_id,
+            models.FacturacionCliente.charge_code_desc,
+        )
+        .filter(
+            models.FacturacionCliente.charge_code_classification.in_(CLASIFICACIONES_PLAN),
+            models.FacturacionCliente.charge_total_amount > 0,
+        )
+        .distinct()
+        .limit(limit)
+        .all()
+    )
+    if not filas:
+        return []
+
+    tarifas = get_ofertas_por_charge_codes(db, [f[0] for f in filas])
+
+    planes = []
+    vistos = set()
+    for charge_code, desc in filas:
+        oferta = tarifas.get(str(charge_code))
+        if not oferta or not oferta.rate_final or charge_code in vistos:
+            continue
+        vistos.add(charge_code)
+        planes.append({
+            "charge_code": charge_code,
+            "nombre": desc or charge_code,
+            "precio": round(float(oferta.rate_final), 2),
+            "tipo_renta": oferta.tipo_renta or "",
+        })
+    return planes
+

@@ -1,5 +1,7 @@
 from typing import Dict, Any, Optional
 
+from app.services.deterministic import EVENTOS_RESUELTOS
+
 # Umbrales
 HANDOFF_THRESHOLD = 0.65
 
@@ -26,11 +28,21 @@ def calculate_uncertainty(
     if fact_payload.get("previous_bills") and len(fact_payload["previous_bills"]) >= 1:
         score -= 0.15
 
-    # 3. El evento detectado no es ambiguo
+    # 3. El evento detectado no es ambiguo. La lista vive en el motor
+    #    determinista para que ambos módulos no puedan desincronizarse cuando
+    #    se añade un evento nuevo (era el caso: aquí faltaban COMPRA_PAQUETE,
+    #    TRAFICO_ADICIONAL, CAMBIO_PLAN y los ajustes por nota de crédito).
     evento = fact_payload.get("detected_event", "")
-    eventos_claros = {"FIN_PROMOCION", "PRORRATEO_CAMBIO_PLAN", "CUOTA_EQUIPO", "REDUCCION_TARIFA", "RECONEXION_MOROSIDAD"}
-    if evento in eventos_claros:
+    if evento in EVENTOS_RESUELTOS:
         score -= 0.10
+
+    # 3.b La descomposición por categoría cuadra con la variación total: la
+    #     explicación está respaldada al céntimo por cargos reales del recibo.
+    componentes = fact_payload.get("variacion_por_categoria") or []
+    if componentes:
+        suma = round(sum(c.get("impacto", 0.0) for c in componentes), 2)
+        if abs(suma - float(fact_payload.get("variation_amount", 0.0))) < 0.05:
+            score -= 0.10
 
     # 4. Hay evidencia explícita
     if fact_payload.get("evidence"):

@@ -1,3 +1,4 @@
+import re
 import time
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -20,7 +21,50 @@ from app.services.uncertainty_calculator import calculate_uncertainty, requires_
 from app.services.feedback_handler import register_new_case
 from app.services.intent_classifier import route, PATRONES_SENSIBLES, has_billing_signals
 from app.services import persona
-from app.core.schemas import ChatRequest, ChatResponse, MessageChunk, PersonalityMetadata
+from app.core.schemas import (
+    ChatRequest,
+    ChatResponse,
+    MessageChunk,
+    PersonalityMetadata,
+    BillSummary,
+    ChargeBreakdownItem,
+    VariationBreakdownItem,
+    BillingAdjustments,
+)
+
+
+def _adjuntar_desgloses(response: ChatResponse, fact_payload: Dict[str, Any]) -> None:
+    """
+    Sobrescribe los desgloses de la respuesta con los del payload determinista.
+
+    Se hace SIEMPRE después de generar el texto, incluso cuando el LLM devolvió
+    algo en estos campos: son cifras y no se acepta la versión del modelo. Es la
+    misma política que ya se aplica a upcoming_alerts y al plan recomendado.
+    """
+    current_bill = fact_payload.get("current_bill") or {}
+    response.current_bill_breakdown = [
+        ChargeBreakdownItem(**item) for item in (current_bill.get("desglose") or [])
+    ]
+    response.variation_breakdown = [
+        VariationBreakdownItem(**item) for item in (fact_payload.get("variacion_por_categoria") or [])
+    ]
+
+    ajustes = fact_payload.get("ajustes_facturacion")
+    response.billing_adjustments = (
+        BillingAdjustments(
+            cantidad=ajustes.get("cantidad", 0),
+            total_notas_credito=ajustes.get("total_notas_credito", 0.0),
+            total_notas_debito=ajustes.get("total_notas_debito", 0.0),
+        )
+        if ajustes else None
+    )
+
+    # El historial de recibos también es un hecho verificado: se reconstruye del
+    # payload para que el LLM no pueda omitir ciclos ni alterar montos.
+    response.historical_bills_summary = [
+        BillSummary(month=pb.get("month", ""), amount=pb.get("amount", 0.0), ciclo=pb.get("ciclo"))
+        for pb in (fact_payload.get("previous_bills") or [])
+    ]
 
 
 def _texto_completo(response: ChatResponse) -> str:
@@ -123,15 +167,38 @@ def _finalizar(db: Session, request: ChatRequest, response: ChatResponse) -> Cha
     return response
 
 
+# Marcadores de que el cliente pregunta por una CAUSA o una VARIACIÓN, no por un
+# dato puntual de su cuenta. Si aparecen, la consulta debe recorrer el pipeline
+# completo de explicación, no el atajo de lectura directa.
+#
+# Sin este control, "¿por qué cambió el monto de mi plan?" caía en el atajo por
+# contener "mi plan" y se respondía "tu plan es X", que no contesta la pregunta.
+_MARCADORES_CAUSA = re.compile(
+    r"\b(por\s*qu[eé]|porqu[eé]|raz[oó]n|motivo|caus[ao]|"
+    r"cambi[oó]|cambio|vari[oó]|subi[oó]|sub[ií]|baj[oó]|"
+    r"aument[oó]|increment[oó]|difer(?:encia|ente)|m[aá]s\s+car[oa]|"
+    r"explic[aá]|no\s+entiendo)\b",
+    re.IGNORECASE,
+)
+
+
 def _tipo_consulta_directa(message: str) -> Optional[str]:
     """
-    Identifica consultas que se responden solo con hechos del recibo actual.
+    Identifica consultas que se responden solo con un hecho verificado del
+    recibo actual, sin pasar por RAG ni por el modelo.
+
+    Solo aplica a preguntas por un DATO ("¿tengo deuda?", "¿qué plan tengo?").
+    Una pregunta por la CAUSA de un cambio comparte vocabulario con estas pero
+    necesita la explicación completa, así que se descarta primero.
 
     Nota: no hace falta excluir aquí "cancelar mi plan" ni similares — esas
     frases ya se capturan antes en intent_classifier.route() como
     SOLICITUD_SENSIBLE (máxima prioridad) y nunca llegan a este punto del
     pipeline de facturación.
     """
+    if _MARCADORES_CAUSA.search(message):
+        return None
+
     texto = message.lower()
     if any(termino in texto for termino in ("deuda", "deudas", "saldo pendiente", "pendiente de pago")):
         return "DEUDA"
@@ -558,6 +625,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     )
     if respuesta_directa:
         components_invoked.append("verified_account_lookup")
+        _adjuntar_desgloses(respuesta_directa, fact_payload)
         campo_verificado = (
             bool(fact_payload.get("estado_deuda"))
             if respuesta_directa.intent_category == "CONSULTA_DEUDA"
@@ -607,7 +675,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     recommended_plan = None
     if cross_sell_eligible:
         components_invoked.append("plan_catalog")
-        recommended_plan = recommend_plan_upgrade(db, fact_payload.get("plan_actual"))
+        recommended_plan = recommend_plan_upgrade(db, fact_payload.get("plan_charge_code"))
         if not recommended_plan:
             cross_sell_eligible = False  # sin candidato real verificado, no se ofrece nada
 
@@ -631,6 +699,9 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     # Señal visible del diferenciador: ¿esta respuesta reutilizó conocimiento ya
     # validado por un humano/feedback, o se generó desde cero (caso nuevo)?
     response.caso_validado = caso_match is not None
+
+    # Los desgloses y el historial se imponen desde el payload verificado.
+    _adjuntar_desgloses(response, fact_payload)
 
     # La clasificación del turno es un hecho determinista, no una opinión del
     # modelo: si se deja la que devuelve el LLM aparecen etiquetas inventadas

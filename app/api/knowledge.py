@@ -170,6 +170,25 @@ def trigger_proactive_check(db: Session = Depends(get_db)):
     return {"status": "ok", **resumen}
 
 
+@router.get("/cuenta-demo")
+def get_cuenta_demo(db: Session = Depends(get_db)):
+    """
+    Devuelve una cuenta financiera real con historial suficiente para demostrar
+    una explicación de variación de recibo.
+
+    Existe para que los clientes que no pueden resolver la identidad del usuario
+    (el bot de Telegram, una prueba manual con curl) no tengan que llevar un
+    identificador escrito a mano que se rompe al reingerir los datos.
+    """
+    cuenta = crud.get_cuenta_demo(db)
+    if not cuenta:
+        raise HTTPException(
+            status_code=404,
+            detail="No hay cuentas facturadas en la base. Ejecuta scripts/ingest_real_data.py.",
+        )
+    return {"cuenta_financiera": cuenta}
+
+
 @router.get("/admin/base-casos")
 def list_base_casos(db: Session = Depends(get_db)):
     """Lista todos los casos validados en la base de conocimiento."""
