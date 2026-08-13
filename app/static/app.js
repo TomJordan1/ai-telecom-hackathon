@@ -248,12 +248,13 @@ function addBotMessage(text, type = 'normal') {
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    if (type === 'evidence') bubble.style.fontFamily = 'monospace';
+    if (type === 'evidence') bubble.classList.add('evidence-bubble');
 
     let formatted = text
         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/`([^`]+)`/g, '<code style="background:#e2e8f0;padding:2px 6px;border-radius:4px;font-family:monospace;font-size:0.85em;">$1</code>')
+        .replace(/`([^`]+)`/g, '<code style="background:#e2e8f0;padding:2px 6px;border-radius:4px;font-family:inherit;font-weight:600;font-size:0.9em;">$1</code>')
         .replace(/\n/g, '<br>');
+
 
     bubble.innerHTML = formatted;
     wrap.appendChild(bubble);
