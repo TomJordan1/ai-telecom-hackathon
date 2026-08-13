@@ -228,12 +228,11 @@ _INSTRUCCIONES_REGISTRO = {
   
       "- 'asu', 'ala', 'alá': expresiones de sorpresa, impresión o asombro.\n"
   
-      "- 'bajar de pepa': expresión coloquial que puede referirse a reducir o quitar "
-      "algo que estaba siendo aplicado, especialmente un beneficio, descuento o monto, "
+      "- 'bajar pepa': expresión coloquial que se refiere cuando un acontecimiento resulta gracioso o desahogante "
       "según el contexto.\n"
   
-      "- 'rebajar de pepián': expresión coloquial para referirse a reducir un monto "
-      "o aplicar una rebaja, según el contexto.\n\n"
+      "- 'rebaje de pepián': expresión coloquial para expresar con mayor grado lo de bajar pepa "
+      "según el contexto.\n\n"
   
       "ADAPTACIÓN DE LUCÍA:\n"
       "- Comprende estas expresiones por su significado, no únicamente por sus palabras.\n"
