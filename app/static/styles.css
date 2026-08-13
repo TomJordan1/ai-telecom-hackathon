@@ -283,3 +283,123 @@ body {
     0%, 80%, 100% { transform: scale(0); }
     40% { transform: scale(1); }
 }
+
+/* Login Overlay Styles */
+.login-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.login-overlay.hidden {
+    display: none;
+}
+
+.login-box {
+    background: white;
+    padding: 30px;
+    border-radius: 15px;
+    width: 90%;
+    max-width: 400px;
+    text-align: center;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+}
+
+.login-box h2 {
+    color: var(--primary);
+    margin-bottom: 10px;
+}
+
+.login-box p {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    margin-bottom: 20px;
+}
+
+.login-box input {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    font-size: 1rem;
+    margin-bottom: 15px;
+    outline: none;
+}
+
+.login-box input:focus {
+    border-color: var(--primary);
+}
+
+.login-box button {
+    width: 100%;
+    background: var(--primary);
+    color: white;
+    border: none;
+    padding: 12px;
+    border-radius: 8px;
+    font-size: 1rem;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.login-box button:hover {
+    background: var(--primary-hover);
+}
+
+.login-hint {
+    margin-top: 15px;
+    font-size: 0.75rem !important;
+    color: #9ca3af !important;
+}
+
+/* -----------------------------------------------------------------------
+   Banner de derivación a agente humano
+   Aparece cuando requires_human_intervention = true.
+   Visualmente distinto al bubble normal para que sea inequívoco.
+----------------------------------------------------------------------- */
+.handoff-banner {
+    align-self: stretch;
+    background: #eff6ff;
+    border: 1px solid #93c5fd;
+    border-left: 4px solid #3b82f6;
+    border-radius: 12px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    animation: fadeIn 0.3s ease;
+}
+
+.handoff-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: #1d4ed8;
+}
+
+.handoff-detail {
+    font-size: 0.83rem;
+    color: #374151;
+    line-height: 1.45;
+}
+
+.handoff-nueva-consulta {
+    margin-top: 4px;
+    align-self: flex-start;
+    background: #3b82f6;
+    color: white;
+    border: none;
+    padding: 7px 14px;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.handoff-nueva-consulta:hover {
+    background: #2563eb;
+}

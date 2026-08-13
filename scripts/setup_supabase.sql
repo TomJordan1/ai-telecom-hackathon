@@ -45,9 +45,11 @@ CREATE TABLE IF NOT EXISTS documentos_politicas (
     id          BIGSERIAL PRIMARY KEY,
     contenido   TEXT NOT NULL,
     -- La categoría se alinea a propósito con los `detected_event` del motor
-    -- determinista (FIN_PROMOCION, PRORRATEO_CAMBIO_PLAN, CUOTA_EQUIPO,
-    -- RECONEXION_MOROSIDAD, REDUCCION_TARIFA) más 'GENERAL', para poder
-    -- filtrar la búsqueda por el evento ya detectado cuando convenga.
+    -- determinista, para poder filtrar la búsqueda por el evento ya detectado
+    -- cuando convenga. Valores en uso (ver app/services/deterministic.py):
+    --   FIN_PROMOCION, PRORRATEO_CAMBIO_PLAN, CUOTA_EQUIPO, FIN_CUOTAS_EQUIPO,
+    --   RECONEXION_MOROSIDAD, REDUCCION_TARIFA, NUEVO_DESCUENTO, CAMBIO_PLAN,
+    --   COMPRA_PAQUETE, TRAFICO_ADICIONAL, NOTA_CREDITO_AJUSTE y GENERAL.
     categoria   VARCHAR(50) DEFAULT 'GENERAL',
     fuente      VARCHAR(100) DEFAULT 'manual_politicas',
     embedding   VECTOR(384),    -- 384 = all-MiniLM-L6-v2 (local) | 1536 = OpenAI text-embedding-3-small

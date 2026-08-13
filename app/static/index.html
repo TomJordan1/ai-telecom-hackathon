@@ -8,6 +8,16 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
+    <div class="login-overlay" id="login-overlay">
+        <div class="login-box">
+            <h2>Bienvenido a Lucía</h2>
+            <p>Por favor, ingresa tu cuenta financiera para acceder a tu información de facturación.</p>
+            <input type="text" id="login-id" placeholder="Ej. 102968745" autocomplete="off">
+            <button id="login-btn">Iniciar Sesión</button>
+            <p class="login-hint">Para pruebas usa una cuenta financiera de la base (FINANCIAL_ACCOUNT). Si no conoces ninguna, consulta <code>GET /api/v1/cuenta-demo</code>.</p>
+        </div>
+    </div>
+    
     <div class="chat-container">
         <header class="chat-header">
             <div class="avatar">L</div>
@@ -15,30 +25,21 @@
                 <h2>Lucía</h2>
                 <p>Copiloto de Facturación</p>
             </div>
-            <!-- Simulación de sesión para demos -->
             <div class="demo-controls">
-                <select id="user-select">
-                    <option value="user_a_fin_promo">User A (Fin de Promo)</option>
-                    <option value="user_b_prorrateo">User B (Prorrateo)</option>
-                    <option value="user_c_equipo">User C (Cuota Equipo)</option>
-                    <option value="user_d_reconexion">User D (Reconexión)</option>
-                    <option value="user_e_alerta_proactiva">User E (Alerta Proactiva)</option>
-                </select>
-                <button type="button" class="admin-link" onclick="nuevaConversacion()" title="Nueva conversación (olvida la sesión actual)">↻</button>
+                <!-- Mostraremos el id del usuario validado -->
+                <span id="current-user-display" style="font-size: 0.8rem; margin-right: 10px; color: #555;"></span>
+                <button type="button" class="admin-link" onclick="nuevaConversacion()" title="Cerrar sesión">🚪</button>
                 <a href="admin.html" class="admin-link" title="Panel de administración">⚙</a>
             </div>
         </header>
         
         <main class="chat-messages" id="chat-messages">
             <!-- Los mensajes se insertarán aquí dinámicamente -->
-            <div class="message bot">
-                <div class="bubble">¡Hola! Soy Lucía, tu asistente virtual. ¿En qué puedo ayudarte con tus recibos hoy?</div>
-            </div>
         </main>
         
         <footer class="chat-input">
-            <input type="text" id="message-input" placeholder="Escribe tu consulta aquí..." autocomplete="off">
-            <button id="send-button">
+            <input type="text" id="message-input" placeholder="Escribe tu consulta aquí..." autocomplete="off" disabled>
+            <button id="send-button" disabled>
                 <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
             </button>
         </footer>

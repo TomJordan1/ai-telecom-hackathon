@@ -134,7 +134,13 @@ async function loadCuarentena() {
 
         list.querySelectorAll("[data-validar]").forEach((btn) => {
             btn.addEventListener("click", async () => {
-                await apiPost(`/admin/validar/${btn.dataset.validar}`, { validado_por: "AGENTE_MOVISTAR" });
+                const casoId = btn.dataset.validar;
+                const textarea = document.getElementById(`solucion-${casoId}`);
+                const solucionEditada = textarea ? textarea.value.trim() : null;
+                await apiPost(`/admin/validar/${casoId}`, {
+                    validado_por: "AGENTE_MOVISTAR",
+                    solucion_editada: solucionEditada || null,
+                });
                 showToast("Caso promovido a la base de conocimiento");
                 loadCuarentena();
             });
@@ -145,6 +151,21 @@ async function loadCuarentena() {
 }
 
 function renderCuarentenaCard(caso) {
+    // Extraer texto visible de la solución propuesta
+    let solucionTexto = "";
+    if (caso.solucion_propuesta) {
+        if (typeof caso.solucion_propuesta === "string") {
+            solucionTexto = caso.solucion_propuesta;
+        } else if (caso.solucion_propuesta.texto) {
+            solucionTexto = caso.solucion_propuesta.texto;
+        } else if (caso.solucion_propuesta.messages) {
+            solucionTexto = caso.solucion_propuesta.messages.map(m => m.text).join("\n");
+        }
+    }
+
+    // Extraer el mensaje original del usuario (para saber qué preguntó)
+    const userMessage = (caso.evidencias && caso.evidencias.user_message) || "";
+
     return `
     <div class="card">
         <div class="card-title-row">
@@ -154,9 +175,14 @@ function renderCuarentenaCard(caso) {
             </div>
             <span class="badge badge-neutral">Incertidumbre: ${(caso.incertidumbre * 100).toFixed(0)}%</span>
         </div>
+        ${userMessage ? `<div class="card-user-message">💬 "${userMessage}"</div>` : ""}
         <div class="stat-row">
             <span>Feedback inmediato: <strong>${caso.feedback_inmediato}</strong></span>
             <span>Feedback posterior: <strong>${caso.feedback_posterior}</strong></span>
+        </div>
+        <div class="card-solution">
+            <label class="solution-label">Solución propuesta (editable):</label>
+            <textarea class="solution-textarea" id="solucion-${caso.id}" rows="4">${solucionTexto}</textarea>
         </div>
         <div class="card-actions">
             <button class="btn-approve" data-validar="${caso.id}">✓ Validar y promover</button>
@@ -178,19 +204,38 @@ async function loadBaseCasos() {
             list.innerHTML = "<p class='empty-state'>Todavía no hay casos validados.</p>";
             return;
         }
-        list.innerHTML = data.casos.map((c) => `
-        <div class="card">
-            <div class="card-title-row">
-                <div>
-                    <div class="card-title">${c.patron}</div>
-                    <div class="card-subtitle">Validado por ${c.validado_por} · ${fmtFecha(c.fecha_validacion)}</div>
+        list.innerHTML = data.casos.map((c) => {
+            // Extraer texto de la solución
+            let solucionTexto = "";
+            if (c.solucion) {
+                if (typeof c.solucion === "string") {
+                    solucionTexto = c.solucion;
+                } else if (c.solucion.texto) {
+                    solucionTexto = c.solucion.texto;
+                } else if (c.solucion.messages) {
+                    solucionTexto = c.solucion.messages.map(m => m.text).join(" ");
+                }
+            }
+            // Extraer contexto del caso (user_id, último mensaje, evento)
+            const ctx = c.condiciones || {};
+            const userId = ctx.user_id || ctx.origen || "";
+            const evento = ctx.detected_event || c.patron;
+
+            return `
+            <div class="card">
+                <div class="card-title-row">
+                    <div>
+                        <div class="card-title">${c.patron}</div>
+                        <div class="card-subtitle">Validado por ${c.validado_por} · ${fmtFecha(c.fecha_validacion)}${userId ? ` · Usuario: ${userId}` : ""}</div>
+                    </div>
+                    <span class="badge badge-done">${c.veces_aplicado} usos</span>
                 </div>
-                <span class="badge badge-done">${c.veces_aplicado} usos</span>
-            </div>
-            <div class="stat-row">
-                <span>Tasa de éxito: <strong>${(c.tasa_exito * 100).toFixed(0)}%</strong></span>
-            </div>
-        </div>`).join("");
+                ${solucionTexto ? `<div class="card-details" style="margin-top:8px;white-space:pre-wrap;font-size:0.83rem">${solucionTexto}</div>` : ""}
+                <div class="stat-row">
+                    <span>Tasa de éxito: <strong>${(c.tasa_exito * 100).toFixed(0)}%</strong></span>
+                </div>
+            </div>`;
+        }).join("");
     } catch (e) {
         list.innerHTML = `<p class="empty-state">Error al cargar: ${e.message}</p>`;
     }

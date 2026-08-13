@@ -46,15 +46,22 @@ def _enviar_alerta(db: Session, user_id: str, mensaje: str) -> Dict[str, Any]:
     return {"user_id": user_id, "estado": "enviado", "canales": canales_usados}
 
 
+MAX_USERS_PROACTIVE_SCAN = 200  # límite para no bloquear el servidor en testing local
+
+
 def run_proactive_check(db: Session) -> Dict[str, Any]:
     """
     Recorre todos los usuarios con recibos, detecta alertas próximas a vencer
     (upcoming_alerts, ya calculado deterministamente) y envía un mensaje
     proactivo por los canales de contacto disponibles.
 
+    Si el usuario no tiene canal de WhatsApp/Telegram operativo (caso habitual
+    en testing local), la alerta se registra igualmente con estado "panel" para
+    que el panel de administración la muestre y el demo sea visible.
+
     Retorna un resumen apto para mostrarse en el panel de administración.
     """
-    user_ids = crud.get_all_user_ids(db)
+    user_ids = crud.get_all_user_ids(db)[:MAX_USERS_PROACTIVE_SCAN]
     resultados: List[Dict[str, Any]] = []
 
     for user_id in user_ids:
@@ -67,6 +74,13 @@ def run_proactive_check(db: Session) -> Dict[str, Any]:
         for alerta in alertas:
             mensaje = generate_proactive_alert_message(alerta)
             envio = _enviar_alerta(db, user_id, mensaje)
+
+            # Si no hay canal externo disponible (testing local), registramos
+            # igualmente la alerta con canal "panel" para hacerla visible en el admin.
+            if envio.get("estado") == "sin_canal_de_contacto":
+                envio["estado"] = "panel"
+                envio["canales"] = ["panel"]
+
             resultados.append({
                 **envio,
                 "alerta": alerta,

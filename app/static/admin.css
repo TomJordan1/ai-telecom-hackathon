@@ -294,3 +294,45 @@ body {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
 }
+
+/* --- Solución editable en cuarentena --- */
+.card-solution {
+    margin-top: 10px;
+}
+
+.solution-label {
+    display: block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.solution-textarea {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 0.85rem;
+    line-height: 1.4;
+    resize: vertical;
+    min-height: 60px;
+}
+
+.solution-textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+}
+
+/* Mensaje original del usuario en cuarentena */
+.card-user-message {
+    margin-top: 6px;
+    font-size: 0.83rem;
+    color: #374151;
+    font-style: italic;
+    padding: 6px 10px;
+    background: #f9fafb;
+    border-radius: 6px;
+    border-left: 3px solid #6b7280;
+}

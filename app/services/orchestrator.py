@@ -1,4 +1,6 @@
+import re
 import time
+from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 from sqlalchemy.orm import Session
@@ -17,9 +19,52 @@ from app.services.llm import generate_response
 from app.services.case_matcher import match_caso
 from app.services.uncertainty_calculator import calculate_uncertainty, requires_handoff
 from app.services.feedback_handler import register_new_case
-from app.services.intent_classifier import route
+from app.services.intent_classifier import route, PATRONES_SENSIBLES, has_billing_signals
 from app.services import persona
-from app.core.schemas import ChatRequest, ChatResponse, MessageChunk, PersonalityMetadata
+from app.core.schemas import (
+    ChatRequest,
+    ChatResponse,
+    MessageChunk,
+    PersonalityMetadata,
+    BillSummary,
+    ChargeBreakdownItem,
+    VariationBreakdownItem,
+    BillingAdjustments,
+)
+
+
+def _adjuntar_desgloses(response: ChatResponse, fact_payload: Dict[str, Any]) -> None:
+    """
+    Sobrescribe los desgloses de la respuesta con los del payload determinista.
+
+    Se hace SIEMPRE después de generar el texto, incluso cuando el LLM devolvió
+    algo en estos campos: son cifras y no se acepta la versión del modelo. Es la
+    misma política que ya se aplica a upcoming_alerts y al plan recomendado.
+    """
+    current_bill = fact_payload.get("current_bill") or {}
+    response.current_bill_breakdown = [
+        ChargeBreakdownItem(**item) for item in (current_bill.get("desglose") or [])
+    ]
+    response.variation_breakdown = [
+        VariationBreakdownItem(**item) for item in (fact_payload.get("variacion_por_categoria") or [])
+    ]
+
+    ajustes = fact_payload.get("ajustes_facturacion")
+    response.billing_adjustments = (
+        BillingAdjustments(
+            cantidad=ajustes.get("cantidad", 0),
+            total_notas_credito=ajustes.get("total_notas_credito", 0.0),
+            total_notas_debito=ajustes.get("total_notas_debito", 0.0),
+        )
+        if ajustes else None
+    )
+
+    # El historial de recibos también es un hecho verificado: se reconstruye del
+    # payload para que el LLM no pueda omitir ciclos ni alterar montos.
+    response.historical_bills_summary = [
+        BillSummary(month=pb.get("month", ""), amount=pb.get("amount", 0.0), ciclo=pb.get("ciclo"))
+        for pb in (fact_payload.get("previous_bills") or [])
+    ]
 
 
 def _texto_completo(response: ChatResponse) -> str:
@@ -122,6 +167,115 @@ def _finalizar(db: Session, request: ChatRequest, response: ChatResponse) -> Cha
     return response
 
 
+# Marcadores de que el cliente pregunta por una CAUSA o una VARIACIÓN, no por un
+# dato puntual de su cuenta. Si aparecen, la consulta debe recorrer el pipeline
+# completo de explicación, no el atajo de lectura directa.
+#
+# Sin este control, "¿por qué cambió el monto de mi plan?" caía en el atajo por
+# contener "mi plan" y se respondía "tu plan es X", que no contesta la pregunta.
+_MARCADORES_CAUSA = re.compile(
+    r"\b(por\s*qu[eé]|porqu[eé]|raz[oó]n|motivo|caus[ao]|"
+    r"cambi[oó]|cambio|vari[oó]|subi[oó]|sub[ií]|baj[oó]|"
+    r"aument[oó]|increment[oó]|difer(?:encia|ente)|m[aá]s\s+car[oa]|"
+    r"explic[aá]|no\s+entiendo)\b",
+    re.IGNORECASE,
+)
+
+
+def _tipo_consulta_directa(message: str) -> Optional[str]:
+    """
+    Identifica consultas que se responden solo con un hecho verificado del
+    recibo actual, sin pasar por RAG ni por el modelo.
+
+    Solo aplica a preguntas por un DATO ("¿tengo deuda?", "¿qué plan tengo?").
+    Una pregunta por la CAUSA de un cambio comparte vocabulario con estas pero
+    necesita la explicación completa, así que se descarta primero.
+
+    Nota: no hace falta excluir aquí "cancelar mi plan" ni similares — esas
+    frases ya se capturan antes en intent_classifier.route() como
+    SOLICITUD_SENSIBLE (máxima prioridad) y nunca llegan a este punto del
+    pipeline de facturación.
+    """
+    if _MARCADORES_CAUSA.search(message):
+        return None
+
+    texto = message.lower()
+    if any(termino in texto for termino in ("deuda", "deudas", "saldo pendiente", "pendiente de pago")):
+        return "DEUDA"
+    if "plan actual" in texto or "mi plan" in texto or "qué plan tengo" in texto or "que plan tengo" in texto:
+        return "PLAN_ACTUAL"
+    return None
+
+
+# Estos hechos se leen directo de un campo de la base de datos, sin ninguna
+# heurística de detección de evento de por medio: no hay ambigüedad sobre si
+# "se reconoció el patrón" (que es lo que mide uncertainty_score). O el dato
+# está en el recibo, o se declara explícitamente que no se puede verificar.
+# Por eso NO reciben el uncertainty_score del motor de variación de recibo.
+CONFIANZA_CONSULTA_DIRECTA_VERIFICADA = 99
+CONFIANZA_CONSULTA_DIRECTA_SIN_DATO = 90
+
+
+def _respuesta_consulta_directa(
+    request: ChatRequest,
+    fact_payload: Dict[str, Any],
+    perfil_lexico: str,
+) -> Optional[ChatResponse]:
+    """
+    Responde consultas de deuda y plan desde campos verificados del recibo.
+    No delega estos hechos al LLM y nunca infiere saldo o plan ausente.
+    """
+    consulta = _tipo_consulta_directa(request.message)
+    if consulta == "DEUDA":
+        estado_deuda = fact_payload.get("estado_deuda")
+        if estado_deuda:
+            periodo = estado_deuda.get("periodo") or fact_payload["current_bill"]["issue_date"]
+            if estado_deuda.get("estado") == "SIN_DEUDA":
+                texto = f"Según tu factura del período {periodo}, no registras deuda pendiente."
+            else:
+                texto = (
+                    f"Según tu factura del período {periodo}, el estado de deuda registrado es: "
+                    f"{estado_deuda.get('valor')}."
+                )
+            confianza = CONFIANZA_CONSULTA_DIRECTA_VERIFICADA
+        else:
+            texto = "Tu recibo disponible no informa un estado de deuda verificable, así que no puedo confirmar un saldo pendiente."
+            confianza = CONFIANZA_CONSULTA_DIRECTA_SIN_DATO
+
+        return ChatResponse(
+            session_id=request.session_id,
+            intent_category="CONSULTA_DEUDA",
+            sentiment_score=3,
+            confidence_score=confianza,
+            messages=[MessageChunk(text=texto, type="explanation")],
+            personality_metadata=PersonalityMetadata(
+                lucia_tone=persona.tono_para_metadata(perfil_lexico)
+            ),
+        )
+
+    if consulta == "PLAN_ACTUAL":
+        plan_actual = fact_payload.get("plan_actual")
+        if plan_actual:
+            texto = f"El plan identificado en tu recibo actual es: {plan_actual}."
+            confianza = CONFIANZA_CONSULTA_DIRECTA_VERIFICADA
+        else:
+            texto = "Tu recibo disponible no permite identificar con certeza el nombre de tu plan actual."
+            confianza = CONFIANZA_CONSULTA_DIRECTA_SIN_DATO
+
+        return ChatResponse(
+            session_id=request.session_id,
+            intent_category="CONSULTA_PLAN_ACTUAL",
+            sentiment_score=3,
+            confidence_score=confianza,
+            messages=[MessageChunk(text=texto, type="explanation")],
+            personality_metadata=PersonalityMetadata(
+                lucia_tone=persona.tono_para_metadata(perfil_lexico)
+            ),
+        )
+
+    return None
+
+
 def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     """
     Orquesta el ciclo completo de vida de la petición.
@@ -133,11 +287,29 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     started_at = time.monotonic()
     components_invoked = ["compliance_filter"]
 
+    # Se lee la última actividad ANTES de tocar el historial: get_or_create_historial
+    # puede hacer un commit (transferencia de session_id) que ya actualizaría
+    # updated_at, perdiendo la señal de "cuánto tiempo pasó desde el turno anterior".
+    ultima_actividad_previa = crud.peek_ultima_actividad(db, request.session_id, request.user_id)
+
     # Paso 1: Recepción, Carga de Estado y Memoria
     historial = crud.get_or_create_historial(db, request.session_id, request.user_id)
     comentarios = historial.comentarios_emocionales or []
     pending_emotions = [e for e in comentarios if not e.get("referenciado", False)]
     historial_conversacion = historial.historial_conversacion or []
+
+    # Seguimiento de pendientes: solo tiene sentido si la sesión se RETOMÓ tras
+    # una brecha real de inactividad, no en cada turno dentro de la misma
+    # conversación activa. Sin este control, cualquier turno que deje
+    # estado_resolucion=False (p. ej. un mes sin variación de recibo) hacía que
+    # el turno inmediatamente siguiente preguntara "¿quedó resuelto lo anterior?",
+    # aunque hubieran pasado 5 segundos.
+    UMBRAL_SESION_RETOMADA_MINUTOS = 30
+    pending_issue_followup = False
+    if historial.estado_resolucion is False and len(historial_conversacion) > 0 and ultima_actividad_previa:
+        minutos_inactivo = (datetime.utcnow() - ultima_actividad_previa).total_seconds() / 60
+        if minutos_inactivo >= UMBRAL_SESION_RETOMADA_MINUTOS:
+            pending_issue_followup = True
 
     # Paso 2: Pre-filtro de Compliance (Regex, antes de cualquier IA)
     blocked_message = validate_compliance(request.message, db)
@@ -152,6 +324,54 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         _registrar_auditoria(
             db, request.session_id, started_at, response.intent_category, components_invoked,
             compliance_triggered=True, confidence_score=response.confidence_score,
+        )
+        return _finalizar(db, request, response)
+
+    # Continuidad de derivación sensible: si el último turno de Lucía ya derivó
+    # por cancelación/portabilidad/nueva línea, un mensaje corto de seguimiento
+    # ("para mí", "sí", "ok") no debe reclasificarse desde cero. Sin este check,
+    # ese turno caía al pipeline de facturación (porque no repite las palabras
+    # clave del patrón sensible) y el LLM real volvía a improvisar el proceso
+    # comercial completo (pedir DNI, preguntar plan, etc.) en vez de simplemente
+    # confirmar que ya está siendo gestionado por un asesor.
+    #
+    # IMPORTANTE: se acota a la MISMA sesión activa (< 30 min de inactividad),
+    # igual que pending_issue_followup. El historial se vincula por user_id
+    # (memoria de largo plazo), así que sin este límite un usuario que vuelve
+    # días después con un mensaje sin señales de facturación quedaría atrapado
+    # repitiendo la respuesta de una solicitud sensible ya vieja y resuelta.
+    sesion_activa = bool(
+        ultima_actividad_previa
+        and (datetime.utcnow() - ultima_actividad_previa).total_seconds() / 60 < UMBRAL_SESION_RETOMADA_MINUTOS
+    )
+    ultimo_turno_lucia = next(
+        (t for t in reversed(historial_conversacion) if t.get("role") == "lucia"), None
+    )
+    patron_en_gestion = (
+        ultimo_turno_lucia.get("intent") if ultimo_turno_lucia else None
+    )
+    if sesion_activa and patron_en_gestion in PATRONES_SENSIBLES and not has_billing_signals(request.message):
+        response = ChatResponse(
+            session_id=request.session_id,
+            intent_category=patron_en_gestion,
+            sentiment_score=historial.score_sentimiento,
+            requires_human_intervention=True,
+            confidence_score=95,
+            messages=[
+                MessageChunk(
+                    text="Ya quedó registrada tu solicitud y un asesor la está gestionando "
+                         "con la información que me compartiste. En cuanto tenga novedades "
+                         "te aviso, o si prefieres puedo derivarte ahora mismo. 🙏",
+                    type="explanation",
+                )
+            ],
+            personality_metadata=PersonalityMetadata(
+                lucia_tone=persona.tono_para_metadata(historial.perfil_lexico_usuario)
+            ),
+        )
+        _registrar_auditoria(
+            db, request.session_id, started_at, response.intent_category, ["compliance_filter", "continuidad_sensible"],
+            requires_human_intervention=True, confidence_score=response.confidence_score,
         )
         return _finalizar(db, request, response)
 
@@ -179,6 +399,92 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     comentario_detectado = extract_emotional_comment(request.message)
     if comentario_detectado:
         crud.add_comentario_emocional(db, request.session_id, comentario_detectado)
+
+    # Solicitud estructural sensible (cancelación, portabilidad): entra al MISMO
+    # ciclo de aprendizaje supervisado que los eventos de facturación, en vez de
+    # dejar que el LLM improvise un proceso no verificado.
+    #
+    # 1. Si ya hay una solución validada en base_casos para este patrón
+    #    (un agente aprobó "CANCELACION_PLAN" antes), se reutiliza — confianza
+    #    alta, sin derivar de nuevo.
+    # 2. Si no, se deriva a un humano Y se registra en cuarentena con ese
+    #    patrón. Así, cuando un agente la valide desde el panel, la próxima
+    #    consulta de cancelación ya no vuelve a derivar.
+    if decision.es_solicitud_sensible:
+        components_invoked.append("case_matcher_sensible")
+        caso_sensible = crud.get_caso_conocido(db, decision.patron_sensible)
+
+        if caso_sensible:
+            crud.increment_caso_aplicado(db, caso_sensible.id)
+            solucion = caso_sensible.solucion_estructurada or {}
+            texto = solucion.get("texto") or (
+                "Ya tengo el proceso verificado para esto. Un asesor lo revisará "
+                "contigo para completarlo con tus datos. 🙏"
+            )
+            response = ChatResponse(
+                session_id=request.session_id,
+                intent_category=decision.patron_sensible,
+                sentiment_score=historial.score_sentimiento,
+                requires_human_intervention=True,
+                confidence_score=99,
+                caso_validado=True,
+                messages=[MessageChunk(text=texto, type="explanation")],
+                personality_metadata=PersonalityMetadata(
+                    lucia_tone=persona.tono_para_metadata(perfil_lexico)
+                ),
+                handoff_context=_build_handoff_context(
+                    request, historial, historial_conversacion,
+                    motivo=f"SOLICITUD_SENSIBLE_{decision.patron_sensible}"
+                ),
+            )
+            _registrar_auditoria(
+                db, request.session_id, started_at, response.intent_category, components_invoked,
+                detected_event=decision.patron_sensible, requires_human_intervention=True,
+                confidence_score=response.confidence_score, handoff_context=response.handoff_context,
+            )
+            return _finalizar(db, request, response)
+
+        # Caso nuevo: se deriva Y se registra en cuarentena para que un agente
+        # lo valide y quede disponible para la próxima consulta similar.
+        response = ChatResponse(
+            session_id=request.session_id,
+            intent_category=decision.patron_sensible,
+            sentiment_score=historial.score_sentimiento,
+            requires_human_intervention=True,
+            confidence_score=80,
+            caso_validado=False,
+            messages=[
+                MessageChunk(
+                    text="Entiendo tu solicitud. Este tipo de trámite requiere verificación "
+                         "adicional, así que te voy a comunicar con un asesor que lo gestione "
+                         "contigo directamente. 🙏",
+                    type="explanation",
+                )
+            ],
+            personality_metadata=PersonalityMetadata(
+                lucia_tone=persona.tono_para_metadata(perfil_lexico)
+            ),
+            handoff_context=_build_handoff_context(
+                request, historial, historial_conversacion,
+                motivo=f"SOLICITUD_SENSIBLE_{decision.patron_sensible}"
+            ),
+        )
+        register_new_case(
+            db=db,
+            session_id=request.session_id,
+            fact_payload={"detected_event": decision.patron_sensible, "origen": "SOLICITUD_SENSIBLE", "user_message": request.message},
+            solucion_propuesta={
+                "intent_category": decision.patron_sensible,
+                "messages": [m.model_dump() for m in response.messages],
+            },
+            uncertainty_score=0.5,
+        )
+        _registrar_auditoria(
+            db, request.session_id, started_at, response.intent_category, components_invoked,
+            detected_event=decision.patron_sensible, requires_human_intervention=True,
+            confidence_score=response.confidence_score, handoff_context=response.handoff_context,
+        )
+        return _finalizar(db, request, response)
 
     # Solicitud explícita de agente humano: máxima prioridad, no se improvisa
     # ni se re-explica facturación. Se deriva de inmediato con contexto completo.
@@ -283,6 +589,23 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
                 motivo="INCERTIDUMBRE_ALTA", fact_payload=fact_payload
             ),
         )
+        # Sin este registro, cualquier caso que derivara por incertidumbre alta
+        # (justo los casos genuinamente difíciles) desaparecía sin dejar rastro
+        # en el panel de cuarentena. No hay ciclo de aprendizaje si el caso más
+        # necesitado de revisión humana nunca llega a la cola de validación.
+        if not caso_match:
+            solucion_serializada = {
+                "intent_category": response.intent_category,
+                "messages": [m.model_dump() for m in response.messages],
+            }
+            fact_payload_con_contexto = {**fact_payload, "user_message": request.message}
+            register_new_case(
+                db=db,
+                session_id=request.session_id,
+                fact_payload=fact_payload_con_contexto,
+                solucion_propuesta=solucion_serializada,
+                uncertainty_score=uncertainty_score,
+            )
         _registrar_auditoria(
             db, request.session_id, started_at, response.intent_category, components_invoked,
             detected_event=fact_payload.get("detected_event"), requires_human_intervention=True,
@@ -290,6 +613,39 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             evidence=fact_payload.get("evidence"), handoff_context=response.handoff_context,
         )
         return _finalizar(db, request, response)
+
+    # Consultas puntuales sobre deuda y plan: se responden directamente con
+    # campos verificados del recibo, antes de consultar RAG o el LLM.
+    # La derivación por ausencia de recibos ya ocurrió arriba, así que esta
+    # rama nunca oculta falta de datos con una respuesta inventada.
+    respuesta_directa = _respuesta_consulta_directa(
+        request=request,
+        fact_payload=fact_payload,
+        perfil_lexico=perfil_lexico,
+    )
+    if respuesta_directa:
+        components_invoked.append("verified_account_lookup")
+        _adjuntar_desgloses(respuesta_directa, fact_payload)
+        campo_verificado = (
+            bool(fact_payload.get("estado_deuda"))
+            if respuesta_directa.intent_category == "CONSULTA_DEUDA"
+            else bool(fact_payload.get("plan_actual"))
+        )
+        crud.update_historial(
+            db,
+            request.session_id,
+            {"estado_resolucion": campo_verificado},
+        )
+        # Nota: no se propaga uncertainty_score aquí porque esta rama no lo usó
+        # para decidir la confianza (ver _respuesta_consulta_directa): es una
+        # lectura directa de dato verificado, no una detección de patrón.
+        _registrar_auditoria(
+            db, request.session_id, started_at, respuesta_directa.intent_category, components_invoked,
+            detected_event=fact_payload.get("detected_event"),
+            confidence_score=respuesta_directa.confidence_score,
+            evidence=fact_payload.get("evidence"),
+        )
+        return _finalizar(db, request, respuesta_directa)
 
     # Paso 4: Búsqueda de Conocimiento (RAG) — solo si no hay caso conocido
     if not caso_match:
@@ -319,7 +675,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     recommended_plan = None
     if cross_sell_eligible:
         components_invoked.append("plan_catalog")
-        recommended_plan = recommend_plan_upgrade(db, fact_payload.get("plan_actual"))
+        recommended_plan = recommend_plan_upgrade(db, fact_payload.get("plan_charge_code"))
         if not recommended_plan:
             cross_sell_eligible = False  # sin candidato real verificado, no se ofrece nada
 
@@ -335,6 +691,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         perfil_lexico=perfil_lexico,
         historial_conversacion=historial_conversacion,
         recommended_plan=recommended_plan,
+        pending_issue_followup=pending_issue_followup,
     )
 
     # Adjuntar el confidence_score (inverso de incertidumbre)
@@ -342,6 +699,9 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     # Señal visible del diferenciador: ¿esta respuesta reutilizó conocimiento ya
     # validado por un humano/feedback, o se generó desde cero (caso nuevo)?
     response.caso_validado = caso_match is not None
+
+    # Los desgloses y el historial se imponen desde el payload verificado.
+    _adjuntar_desgloses(response, fact_payload)
 
     # La clasificación del turno es un hecho determinista, no una opinión del
     # modelo: si se deja la que devuelve el LLM aparecen etiquetas inventadas
@@ -379,16 +739,19 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
 
     crud.update_historial(db, request.session_id, updates)
 
-    # Paso 7.5: Si era un caso nuevo (sin match), registrar en cuarentena
+    # Paso 7.5: Si era un caso nuevo (sin match), registrar en cuarentena.
+    # Se incluye user_message en las evidencias para que en el panel se vea
+    # qué preguntó el usuario, no solo el patrón técnico.
     if not caso_match:
         solucion_serializada = {
             "intent_category": response.intent_category,
             "messages": [m.model_dump() for m in response.messages]
         }
+        fact_payload_con_contexto = {**fact_payload, "user_message": request.message}
         register_new_case(
             db=db,
             session_id=request.session_id,
-            fact_payload=fact_payload,
+            fact_payload=fact_payload_con_contexto,
             solucion_propuesta=solucion_serializada,
             uncertainty_score=uncertainty_score
         )

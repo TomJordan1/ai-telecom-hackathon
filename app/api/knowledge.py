@@ -19,6 +19,7 @@ class FeedbackRequest(BaseModel):
 
 class ValidarCasoRequest(BaseModel):
     validado_por: Optional[str] = "AGENTE_MOVISTAR"
+    solucion_editada: Optional[str] = None  # Texto editado por el agente (reemplaza la solucion propuesta)
 
 # --- Endpoints de Feedback ---
 
@@ -71,17 +72,45 @@ def list_cuarentena(db: Session = Depends(get_db)):
                 "feedback_posterior": c.feedback_posterior,
                 "fecha": c.fecha_consulta.isoformat() if c.fecha_consulta else None,
                 "fecha_followup": c.fecha_followup.isoformat() if c.fecha_followup else None,
+                "solucion_propuesta": c.solucion_propuesta,
+                "evidencias": c.evidencias,
             }
             for c in casos
         ]
     }
 
+
+@router.get("/admin/cuarentena/{caso_id}")
+def get_cuarentena_detalle(caso_id: str, db: Session = Depends(get_db)):
+    """Devuelve el detalle completo de un caso en cuarentena para revisión/edición."""
+    caso = crud.get_caso_cuarentena(db, caso_id)
+    if not caso:
+        raise HTTPException(status_code=404, detail="Caso no encontrado")
+    return {
+        "id": caso.id,
+        "patron": caso.patron_detectado,
+        "session_id": caso.session_id,
+        "incertidumbre": caso.incertidumbre_score,
+        "feedback_inmediato": caso.feedback_inmediato,
+        "feedback_posterior": caso.feedback_posterior,
+        "fecha": caso.fecha_consulta.isoformat() if caso.fecha_consulta else None,
+        "solucion_propuesta": caso.solucion_propuesta,
+        "evidencias": caso.evidencias,
+    }
+
+
 @router.post("/admin/validar/{caso_id}")
 def validate_case(caso_id: str, request: ValidarCasoRequest, db: Session = Depends(get_db)):
     """
     Promueve un caso de cuarentena a base_casos (conocimiento validado).
-    Solo accesible por personal de Movistar.
+    Si se provee solucion_editada, reemplaza la solución propuesta antes de promover.
     """
+    if request.solucion_editada is not None:
+        # El agente editó la respuesta: actualizar el caso antes de promoverlo.
+        crud.update_caso_cuarentena(db, caso_id, {
+            "solucion_propuesta": {"texto": request.solucion_editada}
+        })
+
     nuevo_caso = crud.promover_caso_a_base(db, caso_id, request.validado_por)
     if not nuevo_caso:
         raise HTTPException(status_code=404, detail="Caso no encontrado en cuarentena")
@@ -141,6 +170,25 @@ def trigger_proactive_check(db: Session = Depends(get_db)):
     return {"status": "ok", **resumen}
 
 
+@router.get("/cuenta-demo")
+def get_cuenta_demo(db: Session = Depends(get_db)):
+    """
+    Devuelve una cuenta financiera real con historial suficiente para demostrar
+    una explicación de variación de recibo.
+
+    Existe para que los clientes que no pueden resolver la identidad del usuario
+    (el bot de Telegram, una prueba manual con curl) no tengan que llevar un
+    identificador escrito a mano que se rompe al reingerir los datos.
+    """
+    cuenta = crud.get_cuenta_demo(db)
+    if not cuenta:
+        raise HTTPException(
+            status_code=404,
+            detail="No hay cuentas facturadas en la base. Ejecuta scripts/ingest_real_data.py.",
+        )
+    return {"cuenta_financiera": cuenta}
+
+
 @router.get("/admin/base-casos")
 def list_base_casos(db: Session = Depends(get_db)):
     """Lista todos los casos validados en la base de conocimiento."""
@@ -155,7 +203,9 @@ def list_base_casos(db: Session = Depends(get_db)):
                 "veces_aplicado": c.veces_aplicado,
                 "tasa_exito": c.tasa_exito,
                 "validado_por": c.validado_por,
-                "fecha_validacion": c.fecha_validacion.isoformat() if c.fecha_validacion else None
+                "fecha_validacion": c.fecha_validacion.isoformat() if c.fecha_validacion else None,
+                "solucion": c.solucion_estructurada,
+                "condiciones": c.condiciones,
             }
             for c in casos
         ]
