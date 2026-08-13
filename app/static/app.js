@@ -42,14 +42,14 @@ function renderWelcomeFlow() {
     messagesContainer.innerHTML = '';
     updateBadge();
 
-    // 1. Mensaje de presentación de Lucía
+    // 1. Mensaje de presentación de Lucía (sin emojis dependientes del SO)
     addBotMessage(
-        "¡Hola! 👋 Soy **Lucía**, tu asistente inteligente de Movistar.\n\n" +
-        "Puedo explicarte los cobros de tu recibo, revisar por qué varió tu facturación o informarte sobre nuestros planes disponibles.\n\n" +
-        "Para comenzar: **¿tienes un número de cuenta de Movistar o deseas hacer una consulta libre como visitante?**"
+        "Hola. Soy **Lucía**, tu asistente de facturación y servicios de Movistar.\n\n" +
+        "Puedo explicarte los cobros de tu recibo, revisar el motivo de variación de tus importes o informarte sobre planes disponibles.\n\n" +
+        "Para comenzar: **¿cuentas con un número de cuenta de Movistar o deseas hacer una consulta general como visitante?**"
     );
 
-    // 2. Opciones interactivas directamente en el chat con iconos conversacionales
+    // 2. Opciones interactivas con vectores SVG puros
     const choicesDiv = document.createElement('div');
     choicesDiv.className = 'choice-container';
     choicesDiv.id = 'welcome-choices';
@@ -63,7 +63,7 @@ function renderWelcomeFlow() {
                 </svg>
             </div>
             <div>
-                <strong>Sí, tengo mi número de cuenta</strong>
+                <strong>Tengo mi número de cuenta</strong>
                 <span class="choice-desc">Ingresar cuenta y consultar mi recibo</span>
             </div>
         </button>
@@ -76,8 +76,8 @@ function renderWelcomeFlow() {
                 </svg>
             </div>
             <div>
-                <strong>No soy cliente (Consulta libre)</strong>
-                <span class="choice-desc">Ver planes de fibra, móviles y políticas</span>
+                <strong>Consulta general (Visitante)</strong>
+                <span class="choice-desc">Conocer planes de fibra, móviles y tarifas</span>
             </div>
         </button>
         <button class="btn-choice" id="btn-choice-demo">
@@ -87,8 +87,8 @@ function renderWelcomeFlow() {
                 </svg>
             </div>
             <div>
-                <strong>Probar cuenta demo</strong>
-                <span class="choice-desc">Evaluar escenarios de facturación con 1 clic</span>
+                <strong>Cuentas de demostración</strong>
+                <span class="choice-desc">Evaluar escenarios de prueba del desafío</span>
             </div>
         </button>
     `;
@@ -99,12 +99,12 @@ function renderWelcomeFlow() {
     // Eventos de botones
     document.getElementById('btn-choice-cliente').addEventListener('click', () => {
         choicesDiv.remove();
-        addUserMessage("Sí, tengo mi número de cuenta");
+        addUserMessage("Tengo mi número de cuenta");
         showTyping();
         setTimeout(() => {
             hideTyping();
             addBotMessage(
-                "¡Excelente! Por favor escribe tu **número de cuenta financiera** (ejemplo: `102968745` o `302207847`) o escríbeme directamente tu consulta:"
+                "Por favor escribe tu **número de cuenta financiera** (ejemplo: `102968745` o `302207847`) o redacta directamente tu consulta:"
             );
             messageInput.placeholder = "Escribe tu número de cuenta (ej. 102968745)...";
             messageInput.focus();
@@ -115,14 +115,14 @@ function renderWelcomeFlow() {
     document.getElementById('btn-choice-visitante').addEventListener('click', () => {
         choicesDiv.remove();
         setVisitorMode();
-        addUserMessage("No soy cliente, quiero hacer una consulta libre");
+        addUserMessage("Deseo hacer una consulta como visitante");
         showTyping();
         setTimeout(() => {
             hideTyping();
             addBotMessage(
-                "¡Bienvenido! 😊 Hemos iniciado una sesión temporal. Puedes preguntarme sobre nuestros planes de internet fibra, planes móviles o dudas generales de facturación. ¿En qué te puedo ayudar hoy?"
+                "Has iniciado una sesión temporal. Puedes consultarme sobre nuestros planes de internet fibra, planes móviles o dudas de facturación. ¿En qué te puedo orientar?"
             );
-            messageInput.placeholder = "Pregunta sobre planes, fibra o cómo contratar...";
+            messageInput.placeholder = "Pregunta sobre planes, fibra o contratación...";
             messageInput.focus();
             renderVisitorChips();
         }, 350);
@@ -130,11 +130,11 @@ function renderWelcomeFlow() {
 
     document.getElementById('btn-choice-demo').addEventListener('click', () => {
         choicesDiv.remove();
-        addUserMessage("Quiero probar una cuenta demo");
+        addUserMessage("Deseo probar una cuenta demo");
         showTyping();
         setTimeout(() => {
             hideTyping();
-            addBotMessage("Elige uno de los escenarios de prueba del desafío:");
+            addBotMessage("Selecciona uno de los escenarios de prueba:");
             renderScenarioChoices();
         }, 350);
     });
@@ -147,13 +147,13 @@ function renderScenarioChoices() {
 
     grid.innerHTML = `
         <button class="btn-scenario-pill" data-acc="103692188">
-            <span style="color:#3b82f6;">●</span> Cuenta 103692188 (Fin de Promoción 10GB)
+            Cuenta 103692188 — Fin de Promoción (10GB)
         </button>
         <button class="btn-scenario-pill" data-acc="302207847">
-            <span style="color:#10b981;">●</span> Cuenta 302207847 (Fin Descuento 30GB)
+            Cuenta 302207847 — Fin de Descuento (30GB)
         </button>
         <button class="btn-scenario-pill" data-acc="760000053">
-            <span style="color:#f59e0b;">●</span> Cuenta 760000053 (Renta Adelantada 125GB)
+            Cuenta 760000053 — Renta Adelantada (125GB)
         </button>
     `;
 
@@ -169,7 +169,7 @@ function renderScenarioChoices() {
             showTyping();
             setTimeout(() => {
                 hideTyping();
-                addBotMessage(`¡Cuenta **${acc}** vinculada con éxito! 🎉 Puedes preguntarme por qué varió tu recibo o solicitar el desglose de cargos.`);
+                addBotMessage(`Cuenta **${acc}** vinculada correctamente. Puedes consultar por qué varió tu recibo o solicitar el desglose de cargos.`);
                 renderClientChips();
             }, 350);
         });
@@ -189,24 +189,24 @@ function setClientAccount(acc) {
 }
 
 // ---------------------------------------------------------------------------
-// Chips de Sugerencias
+// Chips de Sugerencias (Texto limpio y profesional)
 // ---------------------------------------------------------------------------
 
 function renderVisitorChips() {
     setQuickChips([
-        '🌐 Planes de fibra óptica',
-        '📄 ¿Cómo funciona la facturación?',
-        '📱 Planes móviles disponibles',
-        '🔑 Tengo una cuenta para consultar'
+        'Planes de fibra óptica',
+        '¿Cómo funciona la facturación?',
+        'Planes móviles disponibles',
+        'Tengo una cuenta para consultar'
     ]);
 }
 
 function renderClientChips() {
     setQuickChips([
-        '📈 ¿Por qué subió mi recibo?',
-        '🧾 ¿Qué me están cobrando?',
-        '📦 ¿Qué plan tengo contratado?',
-        '📅 ¿Cuándo vence mi recibo?'
+        '¿Por qué subió mi recibo?',
+        '¿Qué conceptos me están cobrando?',
+        '¿Qué plan tengo contratado?',
+        '¿Cuándo vence mi recibo?'
     ]);
 }
 
@@ -223,8 +223,7 @@ function setQuickChips(chips) {
                 messageInput.focus();
                 return;
             }
-            const cleanText = text.replace(/^[^\w¿?áéíóúÁÉÍÓÚ]+\s*/, '');
-            messageInput.value = cleanText;
+            messageInput.value = text;
             sendMessage();
         });
         quickChipsContainer.appendChild(chip);
@@ -290,8 +289,8 @@ function addConfidenceBadge(parentWrap, confidenceScore, casoValidado) {
     const badge = document.createElement('div');
     badge.className = `confidence-badge ${casoValidado ? 'validated' : 'learning'}`;
     badge.innerHTML = casoValidado
-        ? `✓ Caso validado · confianza ${confidenceScore}%`
-        : `◌ Caso nuevo, en aprendizaje · confianza ${confidenceScore}%`;
+        ? `Caso validado · Confianza ${confidenceScore}%`
+        : `Caso en aprendizaje · Confianza ${confidenceScore}%`;
     parentWrap.appendChild(badge);
     scrollToBottom();
 }
@@ -300,8 +299,8 @@ function addFeedbackButtons(parentWrap) {
     const bar = document.createElement('div');
     bar.className = 'feedback-bar';
     bar.innerHTML = `
-        <button class="btn-thumb" title="Respuesta útil">👍 Útil</button>
-        <button class="btn-thumb" title="Respuesta no útil">👎 No ayudó</button>
+        <button class="btn-thumb" title="Respuesta útil">Útil</button>
+        <button class="btn-thumb" title="Respuesta no útil">No ayudó</button>
     `;
 
     const btns = bar.querySelectorAll('.btn-thumb');
@@ -333,7 +332,7 @@ async function sendFeedback(score) {
 
 function addHandoffBanner(intentCategory) {
     const esSensible = ['CANCELACION_PLAN', 'PORTABILIDAD', 'NUEVA_LINEA', 'CAMBIO_PLAN'].includes(intentCategory);
-    const titulo = esSensible ? '📋 Solicitud en gestión con asesor' : '👤 Derivado a atención humana';
+    const titulo = esSensible ? 'Solicitud en gestión con asesor' : 'Derivado a atención humana';
     const detalle = esSensible
         ? 'Tu solicitud quedó registrada. Un asesor especializado la retomará con todo el contexto.'
         : 'Tu consulta fue derivada a un agente especializado con el expediente listo.';
@@ -355,10 +354,10 @@ function addUpsellCard(suggestion) {
         <div class="bot-avatar-mini">L</div>
         <div class="bubble-wrap bot" style="width:100%;">
             <div class="upsell-card">
-                <div class="upsell-title">✨ ${suggestion.nombre}</div>
+                <div class="upsell-title">Sugerencia: ${suggestion.nombre}</div>
                 <div style="font-size: 0.82rem">${suggestion.beneficios || ''}</div>
                 <div style="font-size: 0.78rem; margin-top: 4px; color: var(--text-muted)">Precio estimado: S/ ${suggestion.precio}</div>
-                <button class="upsell-button" onclick="alert('¡Solicitud de plan enviada con éxito!')">Me interesa este plan</button>
+                <button class="upsell-button" onclick="alert('Solicitud de plan enviada con éxito')">Me interesa este plan</button>
             </div>
         </div>
     `;
