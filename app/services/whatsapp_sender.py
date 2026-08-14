@@ -1,3 +1,4 @@
+import re
 import requests
 import time
 from app.core.config import settings
@@ -86,6 +87,30 @@ def send_whatsapp_interactive(to_number: str, text: str, buttons: list):
     except Exception as e:
         print(f"Error enviando WhatsApp interactivo: {e}")
 
+def _es_detalle_facturacion(text: str) -> bool:
+    """
+    Verifica que el texto realmente sea un desglose o detalle estructurado
+    de pagos, recibos o planes antes de anteponer '📊 *Detalle:*'.
+    Evita que conclusiones o textos conversacionales queden formateados como detalle.
+    """
+    texto_lower = text.lower().strip()
+    # Frases de cierre conversacional no son detalle
+    if any(p in texto_lower for p in [
+        "así que", "asi que", "tranqui", "aquí estoy", "aqui estoy",
+        "si necesitas", "cualquier duda", "cualquier consulta",
+        "estoy para ayudarte", "espero haberte", "que tengas",
+        "nada más que pagar", "nada mas que pagar"
+    ]):
+        return False
+
+    tiene_monto = bool(re.search(r"S/\.?\s*\d+|\b\d+(?:[\.,]\d{2})?\b", text))
+    tiene_concepto = any(k in texto_lower for k in [
+        "recibo", "factura", "cargo", "cuota", "plan", "desglose",
+        "descuento", "deuda", "monto", "total", "saldo"
+    ])
+    return tiene_monto and tiene_concepto
+
+
 def process_and_send_whatsapp(to_number: str, chat_response: ChatResponse):
     """
     Desempaca la respuesta unificada del orquestador y la envía a WhatsApp
@@ -97,7 +122,7 @@ def process_and_send_whatsapp(to_number: str, chat_response: ChatResponse):
             time.sleep(delay_sec)
             
         text = msg.text
-        if msg.type == "evidence":
+        if msg.type == "evidence" and _es_detalle_facturacion(text):
             # WhatsApp usa asteriscos para negritas
             text = f"📊 *Detalle:*\n```{text}```"
             
