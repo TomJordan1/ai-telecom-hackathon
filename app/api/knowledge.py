@@ -25,6 +25,9 @@ class EnviarAlertaManualRequest(BaseModel):
     whatsapp_number: Optional[str] = None
     mensaje_personalizado: Optional[str] = None
 
+class HandoffReplyRequest(BaseModel):
+    message: str
+
 class FeedbackRequest(BaseModel):
     session_id: str
     caso_id: str
@@ -388,4 +391,47 @@ def enviar_alerta_manual(request: EnviarAlertaManualRequest, db: Session = Depen
         "destinatario": destino_whatsapp,
         "contenido": mensaje_a_enviar
     }
+
+
+# --- Handoff a Agente Real ---
+
+@router.get("/admin/handoff/{session_id}/historial")
+def get_handoff_historial(session_id: str, db: Session = Depends(get_db)):
+    from app.db.models import HistorialInteracciones
+    historial = db.query(HistorialInteracciones).filter(HistorialInteracciones.session_id == session_id).first()
+    if not historial:
+        return {"historial_conversacion": []}
+    return {"historial_conversacion": historial.historial_conversacion or []}
+
+
+@router.post("/admin/handoff/{session_id}/reply")
+def reply_handoff(session_id: str, payload: HandoffReplyRequest, db: Session = Depends(get_db)):
+    from app.services.whatsapp_sender import send_whatsapp_text
+    from app.db import crud
+    
+    if session_id.startswith("wa_"):
+        phone_number = session_id[3:]
+        send_whatsapp_text(phone_number, payload.message)
+    
+    crud.append_turno_conversacion(db, session_id, "lucia", payload.message, "AGENTE_HUMANO")
+    return {"status": "ok"}
+
+
+@router.post("/admin/handoff/{session_id}/resolve")
+def resolve_handoff(session_id: str, db: Session = Depends(get_db)):
+    from app.db import crud
+    from app.db.models import AuditLog
+    
+    crud.update_historial(db, session_id, {"en_atencion_humana": False})
+    
+    logs = db.query(AuditLog).filter(
+        AuditLog.session_id == session_id,
+        AuditLog.requires_human_intervention == True,
+        AuditLog.atendido == False
+    ).all()
+    
+    for log in logs:
+        crud.marcar_handoff_atendido(db, log.id)
+        
+    return {"status": "resolved"}
 

@@ -481,6 +481,10 @@ def update_historial(db: Session, session_id: str, updates: dict):
         db.refresh(historial)
     return historial
 
+def is_en_atencion_humana(db: Session, session_id: str) -> bool:
+    historial = db.query(models.HistorialInteracciones).filter(models.HistorialInteracciones.session_id == session_id).first()
+    return getattr(historial, "en_atencion_humana", False) if historial else False
+
 MAX_TURNOS_HISTORIAL = 12  # ~6 intercambios usuario/Lucía; suficiente para dar
                            # continuidad sin acumular contexto indefinidamente.
 

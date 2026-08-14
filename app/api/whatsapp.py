@@ -128,8 +128,16 @@ def _procesar_y_responder(phone_number: str, user_text: str, message_id: str):
             user_id = f"invitado_{phone_number}"
             print(f"[WA WEBHOOK] Numero {phone_number} no registrado, procesando como visitante.")
 
+        session_id = f"wa_{phone_number}"
+
+        # Intercepción: Si un humano está atendiendo, guardar el mensaje y no responder.
+        if crud.is_en_atencion_humana(db, session_id):
+            print(f"[WA WEBHOOK] Sesión {session_id} en atención humana. Mensaje interceptado.")
+            crud.append_turno_conversacion(db, session_id, "user", user_text)
+            return
+
         chat_request = ChatRequest(
-            session_id=f"wa_{phone_number}",
+            session_id=session_id,
             user_id=user_id,
             message=user_text,
             channel="whatsapp",
