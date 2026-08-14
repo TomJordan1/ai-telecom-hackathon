@@ -578,3 +578,177 @@ body {
     background: var(--primary-hover);
     transform: scale(1.05);
 }
+
+/* ---------------------------------------------------------------------------
+ * Next Best Actions (Siguientes Acciones Recomendadas)
+ * --------------------------------------------------------------------------- */
+.next-actions-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+    margin-bottom: 6px;
+    animation: fadeIn 0.3s ease-out;
+}
+
+.next-action-btn {
+    background: #ffffff;
+    border: 1.5px solid #cbd5e1;
+    border-radius: 20px;
+    padding: 7px 14px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #1e293b;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.next-action-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+}
+
+.next-action-btn.pago {
+    background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+    border-color: #059669;
+    color: #ffffff;
+    box-shadow: 0 2px 6px rgba(16, 185, 129, 0.3);
+}
+
+.next-action-btn.pago:hover {
+    background: linear-gradient(135deg, #047857 0%, #059669 100%);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+}
+
+.next-action-btn.comercial {
+    background: linear-gradient(135deg, #7e22ce 0%, #9333ea 100%);
+    border-color: #7e22ce;
+    color: #ffffff;
+    box-shadow: 0 2px 6px rgba(147, 51, 234, 0.3);
+}
+
+.next-action-btn.comercial:hover {
+    background: linear-gradient(135deg, #6b21a8 0%, #7e22ce 100%);
+}
+
+.next-action-btn.consulta {
+    background: #f8fafc;
+    border-color: #94a3b8;
+    color: #334155;
+}
+
+.next-action-btn.consulta:hover {
+    background: #eef2ff;
+    border-color: #4f46e5;
+    color: #4f46e5;
+}
+
+.next-action-btn.derivacion {
+    background: #fffbeb;
+    border-color: #f59e0b;
+    color: #b45309;
+}
+
+.next-action-btn.derivacion:hover {
+    background: #fef3c7;
+    border-color: #d97706;
+}
+
+/* Modal de Pago Simulado */
+.payment-modal-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(15, 23, 42, 0.6);
+    backdrop-filter: blur(4px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 9999;
+    animation: fadeIn 0.2s ease-out;
+}
+
+.payment-modal {
+    background: white;
+    border-radius: 20px;
+    width: 90%;
+    max-width: 420px;
+    padding: 24px;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+    position: relative;
+}
+
+.payment-modal h3 {
+    font-family: 'Outfit', sans-serif;
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: #0f172a;
+    margin-bottom: 6px;
+}
+
+.payment-modal-close {
+    position: absolute;
+    top: 18px;
+    right: 18px;
+    background: #f1f5f9;
+    border: none;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    cursor: pointer;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #64748b;
+}
+
+.payment-methods {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin: 16px 0;
+}
+
+.payment-method-btn {
+    border: 1.5px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 10px 6px;
+    background: #f8fafc;
+    text-align: center;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.payment-method-btn.active, .payment-method-btn:hover {
+    border-color: #10b981;
+    background: #ecfdf5;
+    color: #047857;
+}
+
+.btn-confirm-payment {
+    background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+    color: white;
+    border: none;
+    border-radius: 12px;
+    padding: 12px;
+    width: 100%;
+    font-weight: 700;
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-top: 8px;
+}
+
+.btn-confirm-payment:hover {
+    background: linear-gradient(135deg, #047857 0%, #059669 100%);
+    transform: translateY(-1px);
+}

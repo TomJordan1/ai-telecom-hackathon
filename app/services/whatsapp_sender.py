@@ -128,7 +128,7 @@ def process_and_send_whatsapp(to_number: str, chat_response: ChatResponse):
             
         send_whatsapp_text(to_number, text)
         
-    # Sugerencia comercial (Upsell) convertida a botones de WhatsApp
+    # 1. Sugerencia comercial (Upsell) convertida a botones de WhatsApp
     suggestion = chat_response.plan_optimizer_suggestion
     if suggestion and suggestion.available and suggestion.plan_recomendado:
         time.sleep(1)
@@ -145,3 +145,29 @@ def process_and_send_whatsapp(to_number: str, chat_response: ChatResponse):
             {"id": "buy_no", "title": "No, gracias"}
         ]
         send_whatsapp_interactive(to_number, texto_upsell, botones)
+    elif chat_response.next_best_actions:
+        # 2. Siguientes mejores acciones recomendadas (Next Best Actions)
+        # WhatsApp permite un máximo de 3 botones interactivos de respuesta rápida
+        wa_botones = []
+        for action in chat_response.next_best_actions[:3]:
+            titulo_btn = action.titulo
+            if len(titulo_btn) > 20:
+                if action.id == "PAY_BILL":
+                    titulo_btn = "💳 Pagar recibo"
+                elif action.id == "VIEW_BREAKDOWN":
+                    titulo_btn = "📊 Ver desglose"
+                elif action.id == "HANDOFF_AGENT":
+                    titulo_btn = "👤 Hablar con asesor"
+                elif action.id == "EXPLORE_PLANS":
+                    titulo_btn = "✨ Ver planes"
+                elif action.id == "REGISTER_RESOLVED":
+                    titulo_btn = "✅ Todo claro"
+                elif action.id == "VINCULAR_CUENTA":
+                    titulo_btn = "🔑 Vincular cuenta"
+                else:
+                    titulo_btn = titulo_btn[:20]
+            wa_botones.append({"id": f"action_{action.id.lower()}", "title": titulo_btn[:20]})
+
+        if wa_botones:
+            time.sleep(1)
+            send_whatsapp_interactive(to_number, "💡 *Siguientes acciones sugeridas:*", wa_botones)

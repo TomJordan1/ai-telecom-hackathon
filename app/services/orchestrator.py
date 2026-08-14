@@ -20,11 +20,13 @@ from app.services.case_matcher import match_caso
 from app.services.uncertainty_calculator import calculate_uncertainty, requires_handoff
 from app.services.feedback_handler import register_new_case
 from app.services.intent_classifier import route, PATRONES_SENSIBLES, has_billing_signals
+from app.services.next_actions import resolve_next_actions
 from app.services import persona
 from app.core.schemas import (
     ChatRequest,
     ChatResponse,
     MessageChunk,
+    NextBestAction,
     PersonalityMetadata,
     BillSummary,
     ChargeBreakdownItem,
@@ -154,12 +156,19 @@ def _registrar_auditoria(
         print(f"[AUDIT ERROR] No se pudo registrar auditoría: {e}")
 
 
-def _finalizar(db: Session, request: ChatRequest, response: ChatResponse) -> ChatResponse:
+def _finalizar(
+    db: Session,
+    request: ChatRequest,
+    response: ChatResponse,
+    fact_payload: Optional[Dict[str, Any]] = None,
+) -> ChatResponse:
     """
     Punto único de salida: registra el turno (usuario + Lucía) en la bitácora
-    acotada de la sesión. Sin este registro, el siguiente turno no tiene forma
-    de saber qué ya se dijo y el modelo termina repitiéndose.
+    acotada de la sesión y garantiza la inclusión de Siguientes Acciones Recomendadas (Next Best Actions).
     """
+    if not response.next_best_actions:
+        response.next_best_actions = resolve_next_actions(fact_payload, response, request)
+
     crud.append_turno_conversacion(db, request.session_id, "user", request.message)
     crud.append_turno_conversacion(
         db, request.session_id, "lucia", _texto_completo(response), response.intent_category
@@ -618,7 +627,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             db, request.session_id, started_at, response.intent_category, components_invoked,
             confidence_score=response.confidence_score
         )
-        return _finalizar(db, request, response)
+        return _finalizar(db, request, response, fact_payload)
 
     # Paso 3.5: Case Matcher — ¿existe una solución validada para este patrón?
     components_invoked.append("case_matcher")
@@ -688,7 +697,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             confidence_score=response.confidence_score, uncertainty_score=uncertainty_score,
             evidence=fact_payload.get("evidence"), handoff_context=response.handoff_context,
         )
-        return _finalizar(db, request, response)
+        return _finalizar(db, request, response, fact_payload)
 
     # Consultas puntuales sobre deuda y plan: se responden directamente con
     # campos verificados del recibo, antes de consultar RAG o el LLM.
@@ -721,7 +730,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             confidence_score=respuesta_directa.confidence_score,
             evidence=fact_payload.get("evidence"),
         )
-        return _finalizar(db, request, respuesta_directa)
+        return _finalizar(db, request, respuesta_directa, fact_payload)
 
     # Paso 4: Búsqueda de Conocimiento (RAG) — solo si no hay caso conocido
     if not caso_match:
@@ -840,4 +849,4 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         evidence=fact_payload.get("evidence"),
     )
 
-    return _finalizar(db, request, response)
+    return _finalizar(db, request, response, fact_payload)

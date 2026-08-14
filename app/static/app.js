@@ -357,6 +357,146 @@ function addUpsellCard(suggestion) {
     scrollToBottom();
 }
 
+function addNextBestActions(actions) {
+    if (!actions || actions.length === 0) return;
+
+    // Remover contenedores previos de next actions para evitar saturación
+    const prevContainers = document.querySelectorAll('.next-actions-container');
+    prevContainers.forEach(c => c.remove());
+
+    const row = document.createElement('div');
+    row.className = 'message-row bot';
+    row.innerHTML = `
+        <div class="bot-avatar-mini" style="visibility:hidden">L</div>
+        <div class="bubble-wrap bot" style="width:100%;">
+            <div class="next-actions-container"></div>
+        </div>
+    `;
+
+    const container = row.querySelector('.next-actions-container');
+
+    actions.forEach(action => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `next-action-btn ${action.tipo || 'consulta'}`;
+        btn.innerHTML = action.titulo;
+        btn.addEventListener('click', () => handleNextActionClick(action));
+        container.appendChild(btn);
+    });
+
+    messagesContainer.appendChild(row);
+    scrollToBottom();
+}
+
+function handleNextActionClick(action) {
+    if (action.id === 'PAY_BILL') {
+        showPaymentModal(action.payload);
+    } else if (action.id === 'VIEW_BREAKDOWN') {
+        messageInput.value = '¿Puedes mostrarme el desglose de conceptos de mi recibo?';
+        sendMessage();
+    } else if (action.id === 'HANDOFF_AGENT') {
+        messageInput.value = 'Deseo comunicarme con un asesor humano por favor.';
+        sendMessage();
+    } else if (action.id === 'EXPLORE_PLANS') {
+        const query = (action.payload && action.payload.plan_nombre) 
+            ? `Me interesa el plan ${action.payload.plan_nombre}, ¿qué beneficios incluye?` 
+            : '¿Qué planes de fibra y móvil tienen disponibles?';
+        messageInput.value = query;
+        sendMessage();
+    } else if (action.id === 'REGISTER_RESOLVED') {
+        sendFeedback(1);
+        messageInput.value = '¡Todo quedó claro! Muchas gracias por la explicación 😊';
+        sendMessage();
+    } else if (action.id === 'VINCULAR_CUENTA') {
+        messageInput.placeholder = 'Escribe tu número de cuenta (ej. 102968745)...';
+        messageInput.focus();
+    } else if (action.payload && action.payload.query) {
+        messageInput.value = action.payload.query;
+        sendMessage();
+    } else {
+        messageInput.value = action.titulo;
+        sendMessage();
+    }
+}
+
+function showPaymentModal(payload) {
+    const amount = payload && payload.amount ? Number(payload.amount).toFixed(2) : '0.00';
+    const periodo = payload && payload.periodo ? payload.periodo : 'Mes en curso';
+
+    // Eliminar modal previo si existe
+    const existing = document.getElementById('payment-modal-backdrop');
+    if (existing) existing.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'payment-modal-backdrop';
+    backdrop.className = 'payment-modal-backdrop';
+
+    backdrop.innerHTML = `
+        <div class="payment-modal">
+            <button class="payment-modal-close" id="modal-close-btn">&times;</button>
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+                <div style="background:#ecfdf5; color:#059669; padding:8px; border-radius:10px;">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect>
+                        <line x1="1" y1="10" x2="23" y2="10"></line>
+                    </svg>
+                </div>
+                <div>
+                    <h3 style="margin:0;">Pagar Recibo Movistar</h3>
+                    <p style="margin:0; font-size:0.78rem; color:#64748b;">Período facturado: ${periodo}</p>
+                </div>
+            </div>
+
+            <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:14px; text-align:center; margin-bottom:14px;">
+                <span style="font-size:0.8rem; color:#64748b; font-weight:600; text-transform:uppercase; letter-spacing:0.05em;">Total a Pagar</span>
+                <div style="font-size:1.8rem; font-weight:800; color:#0f172a; font-family:'Outfit',sans-serif; margin-top:2px;">S/ ${amount}</div>
+            </div>
+
+            <div style="font-size:0.8rem; font-weight:600; color:#334155; margin-bottom:6px;">Selecciona tu método de pago:</div>
+            <div class="payment-methods">
+                <button type="button" class="payment-method-btn active" data-method="yape">💜 Yape</button>
+                <button type="button" class="payment-method-btn" data-method="plin">💙 Plin</button>
+                <button type="button" class="payment-method-btn" data-method="tarjeta">💳 Tarjeta</button>
+            </div>
+
+            <button type="button" class="btn-confirm-payment" id="btn-process-payment">
+                Pagar S/ ${amount} ahora
+            </button>
+            <p style="text-align:center; font-size:0.72rem; color:#94a3b8; margin-top:8px; margin-bottom:0;">
+                🔒 Transacción 100% protegida y encriptada (Simulación)
+            </p>
+        </div>
+    `;
+
+    document.body.appendChild(backdrop);
+
+    // Eventos del modal
+    document.getElementById('modal-close-btn').addEventListener('click', () => backdrop.remove());
+    backdrop.addEventListener('click', (e) => {
+        if (e.target === backdrop) backdrop.remove();
+    });
+
+    const methodBtns = backdrop.querySelectorAll('.payment-method-btn');
+    methodBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            methodBtns.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+        });
+    });
+
+    document.getElementById('btn-process-payment').addEventListener('click', () => {
+        const btn = document.getElementById('btn-process-payment');
+        btn.disabled = true;
+        btn.textContent = 'Procesando pago seguro...';
+
+        setTimeout(() => {
+            backdrop.remove();
+            addBotMessage(`🎉 **¡Pago Exitoso!**\nSe registró el pago de **S/ ${amount}** para tu recibo del período **${periodo}**. Tu estado de cuenta ya figura al día.`);
+            sendFeedback(1);
+        }, 1200);
+    });
+}
+
 function showTyping() {
     const row = document.createElement('div');
     row.className = 'message-row bot';
@@ -434,6 +574,10 @@ async function sendMessage() {
             addFeedbackButtons(ultimoWrap);
         }
 
+        if (data.next_best_actions && data.next_best_actions.length > 0) {
+            await sleep(300);
+            addNextBestActions(data.next_best_actions);
+        }
 
         if (data.plan_optimizer_suggestion && data.plan_optimizer_suggestion.available) {
             await sleep(500);

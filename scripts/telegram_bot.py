@@ -131,16 +131,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("No, gracias", callback_data="buy_no")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
         await update.message.reply_text(texto_upsell, reply_markup=reply_markup, parse_mode="Markdown")
+    elif data.get("next_best_actions"):
+        # 4. Siguientes mejores acciones recomendadas (Next Best Actions)
+        keyboard = []
+        for action in data.get("next_best_actions", []):
+            keyboard.append([InlineKeyboardButton(action["titulo"], callback_data=f"nba_{action['id']}")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("💡 *Acciones sugeridas:*", reply_markup=reply_markup, parse_mode="Markdown")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == "buy_yes":
+    cb_data = query.data or ""
+    if cb_data == "buy_yes":
         await query.edit_message_text(text="¡Genial! Hemos iniciado la activación de tu nuevo plan. (Simulación)")
-    else:
+    elif cb_data == "buy_no":
         await query.edit_message_text(text="Entendido, mantendremos tu plan actual.")
+    elif cb_data.startswith("nba_"):
+        action_id = cb_data.replace("nba_", "")
+        if action_id == "PAY_BILL":
+            await query.message.reply_text("💳 Redirigiendo a la pasarela de pagos seguros de Movistar (Yape/Plin/Tarjeta). ¡Pago registrado en simulación!")
+        elif action_id == "VIEW_BREAKDOWN":
+            await query.message.reply_text("📊 Puedes consultar el desglose completo de tus conceptos en la App Mi Movistar o pedirme 'ver desglose'.")
+        elif action_id == "HANDOFF_AGENT":
+            await query.message.reply_text("👤 Te estamos transfiriendo con un asesor humano con el historial completo de tu consulta...")
+        elif action_id == "EXPLORE_PLANS":
+            await query.message.reply_text("📱 Conoce nuestros planes en www.movistar.com.pe o pregúntame '¿qué planes tienes?'.")
+        elif action_id == "REGISTER_RESOLVED":
+            await query.message.reply_text("😊 ¡Me alegra haberte ayudado! Que tengas un excelente día.")
+        else:
+            await query.message.reply_text("Opción seleccionada.")
 
 def main():
     if not TOKEN:
