@@ -28,21 +28,34 @@ carga al call center ocurriendo frente al jurado.
 ## Preparación (antes de la demo)
 
 1. Servidor corriendo: `uvicorn app.main:app --reload`, en `http://127.0.0.1:8000`.
-2. Base de datos con los datos de prueba: `python scripts/generate_mock_data.py`.
-   Si ya la corriste antes, no hace falta repetirlo (el script es idempotente).
-3. Dos pestañas del navegador abiertas:
+2. Base cargada con el dataset del desafío: `python scripts/ingest_real_data.py --reset`.
+3. Elegir la cuenta con la que se va a demostrar. Las cuentas son las
+   **cuentas financieras reales del dataset**, así que hay que preguntarle al
+   sistema cuál sirve para cada escenario:
+
+   ```powershell
+   python scripts/verify_engine.py
+   ```
+
+   Imprime una cuenta de ejemplo por escenario. Para el guion de abajo hace
+   falta una de `FIN_PROMOCION`. Con `--detalle FIN_PROMOCION` se ve además el
+   payload completo, útil para saber de antemano qué cifras va a citar Lucía.
+
+4. Dos pestañas del navegador abiertas:
    - Pestaña A: `http://127.0.0.1:8000/` (chat web)
    - Pestaña B: `http://127.0.0.1:8000/static/admin.html` (panel de administración)
-4. En la pestaña A, en el selector de usuario de la cabecera, elige
-   **User A (Fin de Promo)**.
+5. En la pestaña A, ingresa la cuenta financiera del paso 3 en la pantalla de acceso.
 
-> Si esta sesión ya tiene un caso `FIN_PROMOCION` validado de una demo
-> anterior, el badge saldrá directamente en verde desde el primer intento.
-> Para reiniciar el ciclo antes del pitch: en la pestaña del panel, en
-> **Base de Conocimiento**, no hay botón de borrado por diseño (es
-> conocimiento validado, no se descarta a la ligera) — usa una base de datos
-> nueva (`Remove-Item lucia_brain.db` y vuelve a sembrar) si necesitas el
-> ciclo completo desde cero.
+> Si la base ya tiene un caso `FIN_PROMOCION` validado de una demo anterior, la
+> insignia saldrá directamente en verde desde el primer intento. Para reiniciar
+> el ciclo de aprendizaje sin tocar los datos de facturación:
+>
+> ```powershell
+> python scripts/reset_db.py --drop-operacional
+> ```
+>
+> Vacía historial, cuarentena, base de casos y auditoría; el dataset queda
+> intacto, así que no hay que volver a ingerir.
 
 ## Paso a paso
 
@@ -54,9 +67,10 @@ En el chat web, escribe:
 ¿por qué subió mi recibo este mes?
 ```
 
-Lucía responde con la explicación (fin de promoción, con el monto exacto y
-la evidencia de que el mismo patrón ya ocurrió antes en el historial de 5
-meses). Debajo del último mensaje aparece la insignia:
+Lucía responde con la explicación: identifica que el descuento que venía
+restándose dejó de aplicarse, cita el nombre real del concepto tal como
+aparece en el recibo y el monto exacto que dejó de descontarse. Debajo del
+último mensaje aparece la insignia:
 
 > ◌ Caso nuevo, en aprendizaje · confianza 80%
 
@@ -113,11 +127,15 @@ igual desde el día uno."*
 El mismo flujo, con `curl` o Postman, en caso de que la demo deba hacerse
 sin interfaz:
 
+Sustituye `<CUENTA>` por la cuenta financiera de `FIN_PROMOCION` que devolvió
+`verify_engine.py`. Si solo necesitas una cuenta cualquiera con historial,
+`GET /api/v1/cuenta-demo` devuelve una.
+
 ```powershell
 # 1. Primera consulta (caso nuevo)
 curl.exe -X POST http://127.0.0.1:8000/api/v1/chat `
   -H "Content-Type: application/json" `
-  -d '{"session_id":"demo-1","user_id":"user_a_fin_promo","message":"por que subio mi recibo?"}'
+  -d '{"session_id":"demo-1","user_id":"<CUENTA>","message":"por que subio mi recibo?"}'
 # -> confidence_score: 80, caso_validado: false
 
 # 2. Buscar el caso en cuarentena
@@ -132,7 +150,7 @@ curl.exe -X POST http://127.0.0.1:8000/api/v1/admin/validar/<ID_DEL_CASO> `
 # 4. Repetir la consulta (nueva sesion)
 curl.exe -X POST http://127.0.0.1:8000/api/v1/chat `
   -H "Content-Type: application/json" `
-  -d '{"session_id":"demo-2","user_id":"user_a_fin_promo","message":"por que subio mi recibo?"}'
+  -d '{"session_id":"demo-2","user_id":"<CUENTA>","message":"por que subio mi recibo?"}'
 # -> confidence_score: 100, caso_validado: true
 ```
 

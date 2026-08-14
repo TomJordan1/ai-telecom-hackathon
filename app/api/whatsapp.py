@@ -14,10 +14,10 @@ from app.db.database import SessionLocal
 
 router = APIRouter()
 
-# Usuario de respaldo cuando el número entrante no está registrado en
-# contactos_usuario. Permite que un jurado escriba desde cualquier celular y
-# vea una demo coherente en lugar de un error.
-USER_ID_FALLBACK = "user_a_fin_promo"
+# La cuenta de respaldo se resuelve contra la base real (crud.get_cuenta_demo):
+# se elige una cuenta financiera con historial suficiente para explicar una
+# variación. Así un jurado puede escribir desde cualquier celular y ver una
+# demo coherente, sin depender de un identificador escrito en el código.
 
 
 def _extraer_texto(message: dict) -> str:
@@ -32,29 +32,112 @@ def _extraer_texto(message: dict) -> str:
     return ""
 
 
+def _detectar_intencion_vinculacion(user_text: str) -> str | None:
+    """
+    Detecta si el mensaje es una instrucción de vinculación o un número de cuenta suelto.
+    Retorna el string de la cuenta encontrada o None.
+    """
+    import re
+    texto = user_text.strip()
+    # 1. Patrones explícitos: 'cuenta 102968745', 'mi cuenta es 102968745', 'vincular 102968745'
+    match_explicito = re.search(
+        r"\b(?:cuenta|mi\s+cuenta(?:\s+es)?|vincular(?:\s+cuenta)?|asociar|id|cliente|codigo|c[oó]digo)\s*[:=]?\s*([0-9]{6,12})\b",
+        texto,
+        re.IGNORECASE
+    )
+    if match_explicito:
+        return match_explicito.group(1)
+
+    # 2. Solo dígitos (el usuario escribió únicamente el número de cuenta de 6 a 12 dígitos)
+    if re.fullmatch(r"[0-9]{6,12}", texto):
+        return texto
+
+    return None
+
+
 def _procesar_y_responder(phone_number: str, user_text: str, message_id: str):
     """
     Orquesta la respuesta y la envía, ya fuera del ciclo de vida de la petición
     de Meta. Se ejecuta en background con su propia sesión de BD: la sesión
     inyectada por Depends(get_db) ya está cerrada cuando corre esta tarea.
-
-    Todo el trabajo lento (LLM, RAG, envíos con delay) vive aquí para que el
-    webhook conteste 200 de inmediato y Meta no reintente el mismo evento.
     """
+    from app.services.whatsapp_sender import send_whatsapp_text
+    from app.services.deterministic import calculate_billing_facts
+
     db = SessionLocal()
     try:
-        # El número entrante se resuelve contra contactos_usuario:
-        # cada cliente ve sus propios recibos, no los de un mock fijo.
+        # 1. Comprobar si el mensaje es una solicitud de vinculación de cuenta
+        cuenta_candidata = _detectar_intencion_vinculacion(user_text)
+        if cuenta_candidata:
+            if crud.verificar_existe_cuenta(db, cuenta_candidata):
+                crud.upsert_contacto_usuario(db, user_id=cuenta_candidata, whatsapp_number=phone_number)
+                fact_payload = calculate_billing_facts(cuenta_candidata, db)
+                plan_nom = fact_payload.get("plan_actual") or "Plan Movistar"
+                current_bill = fact_payload.get("current_bill") or {}
+                monto = current_bill.get("amount", 0.0)
+                fecha = current_bill.get("issue_date", "")
+
+                msg_exito = (
+                    f"✅ *¡Cuenta Vinculada con Éxito!*\n\n"
+                    f"He asociado tu WhatsApp (+{phone_number}) a tu cuenta financiera *{cuenta_candidata}*.\n"
+                    f"📱 *Plan actual:* {plan_nom}\n"
+                    f"📄 *Último recibo ({fecha}):* S/ {monto:.2f}\n\n"
+                    f"A partir de ahora, cuando me escribas consultaré automáticamente tus recibos y te avisaré proactivamente de vencimientos de promociones. ✨\n\n"
+                    f"¿En qué te puedo ayudar hoy con tu recibo?"
+                )
+                send_whatsapp_text(phone_number, msg_exito)
+                print(f"[WA WEBHOOK] Cuenta {cuenta_candidata} vinculada a WhatsApp {phone_number}")
+                return
+            else:
+                msg_error = (
+                    f"⚠️ No encontré la cuenta financiera *{cuenta_candidata}* en la base de datos.\n\n"
+                    f"Por favor verifica los dígitos de tu cuenta financiera (aparece en la cabecera de tu recibo o en la App Mi Movistar) y vuelve a escribirla (ej: *cuenta 102968745*)."
+                )
+                send_whatsapp_text(phone_number, msg_error)
+                print(f"[WA WEBHOOK] Intento de vinculación fallido: cuenta {cuenta_candidata} no existe.")
+                return
+
+        # 2. El número entrante se resuelve contra contactos_usuario:
         user_id = crud.get_user_id_por_whatsapp(db, phone_number)
+        es_visitante = False
+
         if user_id:
-            print(f"[WA WEBHOOK] Numero {phone_number} -> user_id={user_id}")
+            print(f"[WA WEBHOOK] Numero {phone_number} -> cuenta vinculada={user_id}")
         else:
-            user_id = USER_ID_FALLBACK
-            print(f"[WA WEBHOOK] Numero {phone_number} no registrado en "
-                  f"contactos_usuario, se usa fallback user_id={user_id}")
+            es_visitante = True
+            texto_limpio = user_text.lower().strip()
+            es_saludo = any(
+                texto_limpio.startswith(saludo) or texto_limpio == saludo
+                for saludo in ["hola", "buenas", "buenos dias", "buenas tardes", "buenas noches", "inicio", "empezar", "menu", "hi", "hey"]
+            )
+
+            # Si es saludo inicial de un usuario no vinculado, pedir número de cuenta o consulta
+            if es_saludo:
+                msg_bienvenida = (
+                    "¡Hola! 👋 Soy *Lucía*, tu copiloto de facturación y servicios de Movistar.\n\n"
+                    "Para consultar tus recibos, revisar cobros y recibir alertas sobre tu línea, "
+                    "por favor envíame tu *número de cuenta financiera* (ejemplo: *cuenta 102968745* o solo los dígitos *102968745*).\n\n"
+                    "Si aún no eres cliente y deseas conocer nuestros planes de internet fibra o telefonía móvil, "
+                    "puedes escribirme tu consulta directamente. 😊"
+                )
+                send_whatsapp_text(phone_number, msg_bienvenida)
+                print(f"[WA WEBHOOK] Saludo y solicitud de cuenta enviada a visitante {phone_number}")
+                return
+
+            # Para consultas informativas de no clientes, usar sesión de invitado
+            user_id = f"invitado_{phone_number}"
+            print(f"[WA WEBHOOK] Numero {phone_number} no registrado, procesando como visitante.")
+
+        session_id = f"wa_{phone_number}"
+
+        # Intercepción: Si un humano está atendiendo, guardar el mensaje y no responder.
+        if crud.is_en_atencion_humana(db, session_id):
+            print(f"[WA WEBHOOK] Sesión {session_id} en atención humana. Mensaje interceptado.")
+            crud.append_turno_conversacion(db, session_id, "user", user_text)
+            return
 
         chat_request = ChatRequest(
-            session_id=f"wa_{phone_number}",
+            session_id=session_id,
             user_id=user_id,
             message=user_text,
             channel="whatsapp",
@@ -66,6 +149,16 @@ def _procesar_y_responder(phone_number: str, user_text: str, message_id: str):
 
         process_and_send_whatsapp(phone_number, chat_response)
         print(f"[WA WEBHOOK] Respuesta enviada a {phone_number}")
+
+        # Si es visitante y preguntó por catálogo, agregar tip de vinculación
+        if es_visitante and len(chat_response.messages) > 0:
+            tip = (
+                "💡 *Tip:* Cuando tengas tu cuenta Movistar a mano, envíala con: *cuenta <número>* "
+                "para activar tus alertas y consultar tus recibos."
+            )
+            send_whatsapp_text(phone_number, tip)
+
+
     except Exception as e:
         import traceback
         print(f"[WA WEBHOOK ERROR] Fallo procesando {message_id}: {e}")

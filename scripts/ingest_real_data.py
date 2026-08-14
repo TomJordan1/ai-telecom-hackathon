@@ -1,49 +1,79 @@
 """
 ingest_real_data.py
 -------------------
-Ingesta exclusiva de datos reales derivados de los CSV del dataset.
+Ingesta exclusiva de datos reales derivados de la carpeta `disclaimer/`.
+Fuente de datos:
+  - disclaimer/FACTURACION_CLIENTES.csv (delimitador ';')
+  - disclaimer/PLANTA_CLIENTES.csv       (delimitador ';')
+  - disclaimer/ORDENES.csv               (delimitador ',')
+  - disclaimer/NOTAS_CREDITO.csv          (delimitador ',')
+  - disclaimer/CATALOGO_OFERTAS.csv       (delimitador ';')
+
 No genera datos ficticios, planes aleatorios ni promociones inventadas.
-Para escenarios de demo/testing usar seed_demo.py (separado).
 """
 
+import argparse
 import os
 import sys
 from pathlib import Path
 from datetime import datetime
-
 import pandas as pd
 
-# La URL SQLite por defecto es relativa al directorio de trabajo. Forzamos la
-# raíz del proyecto ANTES de importar database para que la ingesta y la app web
-# usen el mismo lucia_brain.db aunque el script se ejecute desde scripts/.
+# La URL SQLite/Postgres por defecto es relativa al directorio de trabajo.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 os.chdir(PROJECT_ROOT)
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.db.database import engine, Base, SessionLocal
-from app.db.models import ReciboCliente, CatalogoPlanes, TerminosRestringidos, ContactoUsuario, OrdenCliente
+from app.services import deterministic
+from app.db.models import (
+    FacturacionCliente,
+    TerminosRestringidos,
+    ContactoUsuario,
+    OrdenCliente,
+    NotaCredito,
+    PlantaCliente,
+    CatalogoOfertas,
+)
 
 # ---------------------------------------------------------------------------
-# Rutas absolutas a los CSV (no depende del cwd de ejecución)
+# Rutas absolutas a los CSV del directorio disclaimer
 # ---------------------------------------------------------------------------
 DISCLAIMER_DIR = PROJECT_ROOT / "disclaimer"
-PATH_CARGOS = DISCLAIMER_DIR / "Cargos_FacturadosV2.csv"
-PATH_CLIENTES = DISCLAIMER_DIR / "REGISTROS_CLIENTES_20MIL.csv"
-PATH_ORDENES = DISCLAIMER_DIR / "Ordenes.csv"
+PATH_FACTURACION = DISCLAIMER_DIR / "FACTURACION_CLIENTES.csv"
+PATH_PLANTA = DISCLAIMER_DIR / "PLANTA_CLIENTES.csv"
+PATH_ORDENES = DISCLAIMER_DIR / "ORDENES.csv"
+PATH_NOTAS_CREDITO = DISCLAIMER_DIR / "NOTAS_CREDITO.csv"
+PATH_CATALOGO_OFERTAS = DISCLAIMER_DIR / "CATALOGO_OFERTAS.csv"
 
-# Límite de cuentas para desarrollo local
-MAX_USERS = 500
+
+# Marcadores de valor ausente que aparecen al convertir celdas vacías de pandas
+# con str(). Sin filtrarlos, la cadena literal "nan" acababa almacenada como si
+# fuera el motivo real de una orden y se enviaba al modelo como evidencia.
+_VALORES_NULOS = {"", "nan", "none", "null", "nat", "<na>"}
 
 
-def _normalize_account_key(value) -> str:
+def _texto(value) -> str:
+    """Convierte una celda a texto limpio, devolviendo '' si no hay valor real."""
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    texto = str(value).strip()
+    return "" if texto.lower() in _VALORES_NULOS else texto
+
+
+def _normalize_key(value) -> str:
     """
-    Normaliza FINANCIAL_ACCOUNT_KEY / FINANCIAL_ACCOUNT a str entero sin decimales ni espacios.
-    Evita problemas como '102968745.0' vs '102968745'.
+    Normaliza identificadores a str entero sin decimales ni espacios.
+    Evita diferencias como '102968745.0' vs '102968745'.
     """
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
     s = str(value).strip()
-    # Si viene como float string (e.g. "102968745.0"), quitar el .0
     if "." in s:
         try:
             s = str(int(float(s)))
@@ -52,243 +82,396 @@ def _normalize_account_key(value) -> str:
     return s
 
 
-def init_db():
-    print(f"Creando tablas en {engine.dialect.name}...")
+# ---------------------------------------------------------------------------
+# Selección de cuentas
+# ---------------------------------------------------------------------------
+#
+# Los escenarios críticos del desafío no están repartidos de forma uniforme: en
+# el dataset completo hay 1652 cuentas con prorrateo pero solo 17 con cuota de
+# equipo financiado. Tomar "las primeras N cuentas del archivo" deja escenarios
+# enteros fuera de la base y hace imposible demostrarlos.
+#
+# Por eso la selección se hace por cobertura: primero se asegura que entren
+# cuentas de cada escenario, y solo después se rellena hasta el límite pedido.
+
+MIN_CICLOS_ESCENARIO = 3   # ciclos necesarios para que la comparación tenga sentido
+CUOTA_POR_ESCENARIO = 40   # cuentas a reservar por escenario, si existen
+
+# Eventos que corresponden a los cinco escenarios que el desafío pide demostrar.
+EVENTOS_ESCENARIO = (
+    "PRORRATEO_CAMBIO_PLAN",   # (a) prorrateos
+    "CUOTA_EQUIPO",            # (b) cuota de equipo financiado
+    "RECONEXION_MOROSIDAD",    # (c) reconexión tras suspensión morosa
+    "FIN_PROMOCION",           # (d) fin de descuentos
+    "CAMBIO_PLAN",             # (e) cambios de plan
+    # Otras causas de variación que el desafío menciona explícitamente.
+    "COMPRA_PAQUETE",
+    "TRAFICO_ADICIONAL",
+    # NOTA: NOTA_CREDITO_AJUSTE no se puede priorizar en esta etapa. Ese evento
+    # nace de cruzar el recibo con NOTAS_CREDITO.csv, y aquí solo se ha leído
+    # FACTURACION_CLIENTES.csv. Las notas de crédito de las cuentas elegidas se
+    # ingieren más abajo, así que el evento sí se detecta en tiempo de ejecución.
+)
+
+
+def _evento_por_cuenta(df_fact: "pd.DataFrame") -> dict:
+    """
+    Determina qué evento detectaría el motor determinista en el último ciclo de
+    cada cuenta. Usa el MISMO módulo que la aplicación en tiempo de ejecución
+    (`app.services.deterministic`), así que la selección no puede divergir de lo
+    que Lucía realmente explicará.
+    """
+    columnas = [
+        "FINANCIAL_ACCOUNT_KEY", "ciclo", "CHARGE_TOTAL_AMOUNT", "CHARGE_CODE_ID",
+        "CHARGE_CODE_DESC", "CHARGE_CODE_CLASSIFICATION", "GRUPO", "SUB_GRUPO",
+    ]
+    reducido = df_fact[columnas].copy()
+    reducido["ciclo"] = reducido["ciclo"].astype(str)
+
+    eventos = {}
+    for cuenta, filas_cuenta in reducido.groupby("FINANCIAL_ACCOUNT_KEY", sort=False):
+        ciclos = sorted(filas_cuenta["ciclo"].unique(), reverse=True)
+        if len(ciclos) < MIN_CICLOS_ESCENARIO:
+            continue
+
+        def cargos_de(ciclo):
+            sub = filas_cuenta[filas_cuenta["ciclo"] == ciclo]
+            return sub.rename(columns={"CHARGE_TOTAL_AMOUNT": "CHARGE_TOTAL_AMOUNT"}).to_dict("records")
+
+        cargos_actuales = cargos_de(ciclos[0])
+        cargos_previos = cargos_de(ciclos[1])
+        delta = round(
+            sum(c["CHARGE_TOTAL_AMOUNT"] for c in cargos_actuales)
+            - sum(c["CHARGE_TOTAL_AMOUNT"] for c in cargos_previos),
+            2,
+        )
+        componentes = deterministic.descomponer_variacion(cargos_actuales, cargos_previos)
+        eventos[cuenta] = (deterministic._detectar_evento(componentes, delta), len(ciclos))
+
+    return eventos
+
+
+def seleccionar_cuentas(df_fact: "pd.DataFrame", max_users: int) -> set:
+    """
+    Elige qué cuentas ingerir garantizando que los escenarios del desafío queden
+    representados. Con max_users <= 0 se cargan todas y no hace falta priorizar.
+    """
+    todas = list(df_fact["FINANCIAL_ACCOUNT_KEY"].unique())
+    if not max_users or max_users <= 0:
+        print(f"  -> Se ingieren todas las cuentas del archivo: {len(todas)}")
+        return set(todas)
+
+    print("Clasificando cuentas por escenario para garantizar cobertura de la demo...")
+    eventos = _evento_por_cuenta(df_fact)
+
+    por_evento = {}
+    for cuenta, (evento, n_ciclos) in eventos.items():
+        por_evento.setdefault(evento, []).append((n_ciclos, cuenta))
+
+    seleccionadas = []
+    vistas = set()
+    for evento in EVENTOS_ESCENARIO:
+        candidatos = sorted(por_evento.get(evento, []), reverse=True)
+        elegidos = [cuenta for _, cuenta in candidatos[:CUOTA_POR_ESCENARIO]]
+        nuevos = [c for c in elegidos if c not in vistas]
+        vistas.update(nuevos)
+        seleccionadas.extend(nuevos)
+        estado = f"{len(nuevos)} cuenta(s)" if nuevos else "sin cobertura en el dataset"
+        print(f"  - {evento:24} {estado} (candidatas: {len(candidatos)})")
+
+    if len(seleccionadas) > max_users:
+        print(f"  [AVISO] Los escenarios requieren {len(seleccionadas)} cuentas y max_users={max_users}. "
+              f"Se amplía el límite para no dejar escenarios sin datos.")
+    else:
+        # Se rellena con el resto de cuentas en orden de archivo hasta el límite.
+        for cuenta in todas:
+            if len(seleccionadas) >= max_users:
+                break
+            if cuenta not in vistas:
+                vistas.add(cuenta)
+                seleccionadas.append(cuenta)
+
+    print(f"  -> Cuentas seleccionadas: {len(seleccionadas)}")
+    return set(seleccionadas)
+
+
+def init_db(reset: bool = False, max_users: int = 1000):
+    print("=" * 70)
+    print(f"  Ingesta de Datos Reales (`disclaimer/`) -> Engine: {engine.dialect.name}")
+    print("=" * 70)
+
+    print("Creando tablas si no existen...")
     Base.metadata.create_all(bind=engine)
 
     db = SessionLocal()
 
     try:
-        # ------------------------------------------------------------------
-        # Idempotencia: verificar si ya hay recibos cargados (no depender de CatalogoPlanes)
-        # ------------------------------------------------------------------
-        if db.query(ReciboCliente).first():
-            print("La base de datos ya contiene recibos. Saltando ingesta.")
+        if reset:
+            print("(--reset activado) Limpiando datos previos de facturación y entidades relacionadas...")
+            db.query(FacturacionCliente).delete()
+            db.query(OrdenCliente).delete()
+            db.query(NotaCredito).delete()
+            db.query(PlantaCliente).delete()
+            db.query(CatalogoOfertas).delete()
+            db.commit()
+            print("Tablas operacionales limpiadas exitosamente.")
+        elif db.query(FacturacionCliente).first():
+            print("La base de datos ya contiene cargos en facturacion_clientes. Usa --reset si deseas volver a ingerir.")
             return
-
-        # ------------------------------------------------------------------
-        # 1. Poblar Catálogo de Planes (mantener para cross-sell determinista)
-        # ------------------------------------------------------------------
-        planes = [
-            CatalogoPlanes(nombre="Internet Hogar 100 Mbps", precio=69.90, beneficios="Internet Ilimitado"),
-            CatalogoPlanes(nombre="Internet Hogar 300 Mbps", precio=99.90, beneficios="Internet Ilimitado + Router Smart"),
-            CatalogoPlanes(nombre="Internet 600 Mbps", precio=99.90, beneficios="Doble velocidad, Movistar Play incluido (PROMO)"),
-            CatalogoPlanes(nombre="Internet Fibra 1000 Mbps", precio=149.90, beneficios="Máxima velocidad, 2 Repetidores Mesh"),
-        ]
-        db.add_all(planes)
 
         # ------------------------------------------------------------------
         # 2. Poblar Términos Restringidos
         # ------------------------------------------------------------------
-        terminos = [
-            TerminosRestringidos(
-                patron_regex=r"\b(m[ií]erda|put[oa]|imb[ée]cil|est[úu]pido)\b",
-                accion_disparador="INSULTO",
-                mensaje_bloqueo="Por favor mantengamos el respeto en nuestra conversación. Estoy aquí para ayudarte.",
-            ),
-            TerminosRestringidos(
-                patron_regex=r"\b(denunciar|indecopi|abogado|demanda)\b",
-                accion_disparador="LEGAL_RIESGO",
-                mensaje_bloqueo="Entiendo tu molestia. Quiero ayudarte a resolver esto de la mejor manera. Déjame revisar tu caso en detalle.",
-            ),
-            TerminosRestringidos(
-                patron_regex=r"\b(\d{16}|\d{4}-\d{4}-\d{4}-\d{4})\b",
-                accion_disparador="DATOS_SENSIBLES",
-                mensaje_bloqueo="Por tu seguridad, no compartas números de tarjeta de crédito por este medio.",
-            ),
-        ]
-        db.add_all(terminos)
+        if not db.query(TerminosRestringidos).first():
+            terminos = [
+                TerminosRestringidos(
+                    patron_regex=r"\b(m[ií]erda|put[oa]|imb[ée]cil|est[úu]pido)\b",
+                    accion_disparador="INSULTO",
+                    mensaje_bloqueo="Por favor mantengamos el respeto en nuestra conversación. Estoy aquí para ayudarte.",
+                ),
+                TerminosRestringidos(
+                    patron_regex=r"\b(denunciar|indecopi|abogado|demanda)\b",
+                    accion_disparador="LEGAL_RIESGO",
+                    mensaje_bloqueo="Entiendo tu molestia. Quiero ayudarte a resolver esto de la mejor manera. Déjame revisar tu caso en detalle.",
+                ),
+                TerminosRestringidos(
+                    patron_regex=r"\b(\d{16}|\d{4}-\d{4}-\d{4}-\d{4})\b",
+                    accion_disparador="DATOS_SENSIBLES",
+                    mensaje_bloqueo="Por tu seguridad, no compartas números de tarjeta de crédito por este medio.",
+                ),
+            ]
+            db.add_all(terminos)
+            db.commit()
 
         # ------------------------------------------------------------------
-        # 3. Leer y procesar CSVs
+        # 3. Ingerir CATALOGO_OFERTAS.csv
         # ------------------------------------------------------------------
-        print("Cargando CSVs con pandas...")
+        BATCH_SIZE = 1000
 
-        try:
-            df_cargos = pd.read_csv(PATH_CARGOS, sep=";")
-            df_clientes = pd.read_csv(PATH_CLIENTES, sep=";", dtype=str)
-        except Exception as e:
-            print(f"Error al leer los CSVs: {e}")
-            print(f"  PATH_CARGOS: {PATH_CARGOS}")
-            print(f"  PATH_CLIENTES: {PATH_CLIENTES}")
-            db.rollback()
-            return
-
-        # Normalizar las claves de cuenta en ambos DataFrames
-        df_cargos["FINANCIAL_ACCOUNT_KEY"] = df_cargos["FINANCIAL_ACCOUNT_KEY"].apply(_normalize_account_key)
-        df_clientes["FINANCIAL_ACCOUNT"] = df_clientes["FINANCIAL_ACCOUNT"].apply(_normalize_account_key)
-
-        # Convertir montos explícitamente a float
-        df_cargos["CHARGE_NET_AMOUNT"] = pd.to_numeric(df_cargos["CHARGE_NET_AMOUNT"], errors="coerce").fillna(0.0)
-        df_cargos["CHARGE_TOTAL_AMOUNT"] = pd.to_numeric(df_cargos["CHARGE_TOTAL_AMOUNT"], errors="coerce").fillna(0.0)
-
-        # Extraer las top MAX_USERS cuentas
-        unique_accounts = df_cargos["FINANCIAL_ACCOUNT_KEY"].unique()[:MAX_USERS]
-        df_cargos_filtered = df_cargos[df_cargos["FINANCIAL_ACCOUNT_KEY"].isin(unique_accounts)]
-
-        print(f"Procesando recibos para {len(unique_accounts)} cuentas...")
-
-        # Construir mapa de clientes indexado por FINANCIAL_ACCOUNT para lookup rápido.
-        # Un FINANCIAL_ACCOUNT puede tener múltiples filas (una por línea/servicio),
-        # por lo que se desduplicamos quedándonos con la primera ocurrencia.
-        df_clientes_unique = df_clientes.drop_duplicates(subset="FINANCIAL_ACCOUNT", keep="first")
-        clientes_map = df_clientes_unique.set_index("FINANCIAL_ACCOUNT").to_dict(orient="index")
+        if PATH_CATALOGO_OFERTAS.exists():
+            print(f"Cargando {PATH_CATALOGO_OFERTAS.name}...")
+            df_ofertas = pd.read_csv(PATH_CATALOGO_OFERTAS, sep=";")
+            ofertas_objs = []
+            for _, r in df_ofertas.iterrows():
+                cc = _texto(r.get("CHARGE CODE"))
+                if cc:
+                    ofertas_objs.append(CatalogoOfertas(
+                        charge_code=cc,
+                        rate_final=float(pd.to_numeric(r.get("rate_final"), errors="coerce") or 0.0),
+                        tipo_renta=_texto(r.get("TIPO DE RENTA")),
+                    ))
+            for i in range(0, len(ofertas_objs), BATCH_SIZE):
+                db.add_all(ofertas_objs[i:i + BATCH_SIZE])
+                db.commit()
+            print(f"  -> {len(ofertas_objs)} ofertas agregadas al catálogo.")
 
         # ------------------------------------------------------------------
-        # 4. Generar recibos agrupados por cuenta + ciclo
+        # 4. Ingerir FACTURACION_CLIENTES.csv
         # ------------------------------------------------------------------
-        grouped = df_cargos_filtered.groupby(["FINANCIAL_ACCOUNT_KEY", "ciclo"])
+        print(f"Cargando {PATH_FACTURACION.name}...")
+        df_fact = pd.read_csv(PATH_FACTURACION, sep=";")
+        
+        # Limpiar espacios en los nombres de columnas (e.g. 'FECHA-VENCIMIENTO ')
+        df_fact.columns = [c.strip() for c in df_fact.columns]
 
-        recibos_a_insertar = []
+        df_fact["FINANCIAL_ACCOUNT_KEY"] = df_fact["FINANCIAL_ACCOUNT_KEY"].apply(_normalize_key)
+        df_fact["CUSTOMER_KEY"] = df_fact["CUSTOMER_KEY"].apply(_normalize_key)
+        df_fact["CHARGE_NET_AMOUNT"] = pd.to_numeric(df_fact["CHARGE_NET_AMOUNT"], errors="coerce").fillna(0.0)
+        df_fact["CHARGE_TOTAL_AMOUNT"] = pd.to_numeric(df_fact["CHARGE_TOTAL_AMOUNT"], errors="coerce").fillna(0.0)
 
-        for (account_id, ciclo), group in grouped:
-            monto_total = round(float(group["CHARGE_TOTAL_AMOUNT"].sum()), 2)
+        target_accounts = seleccionar_cuentas(df_fact, max_users)
+        df_fact_filtered = df_fact[df_fact["FINANCIAL_ACCOUNT_KEY"].isin(target_accounts)]
 
-            # Formatear fecha de emisión desde el ciclo (YYYYMMDD)
-            ciclo_str = str(int(float(ciclo))) if not isinstance(ciclo, str) else str(ciclo)
-            if len(ciclo_str) >= 6:
-                mes_emision = f"{ciclo_str[:4]}-{ciclo_str[4:6]}"
-                fecha_emision = datetime(int(ciclo_str[:4]), int(ciclo_str[4:6]), 1)
-            else:
-                mes_emision = "2026-01"
-                fecha_emision = datetime(2026, 1, 1)
+        customer_keys_ingeridos = set(df_fact_filtered["CUSTOMER_KEY"].dropna().unique())
 
-            # Preservar información real de los cargos (req #9)
-            conceptos_facturados = []
-            for _, row in group.iterrows():
-                conceptos_facturados.append({
-                    "CHARGE_CODE_ID": str(row.get("CHARGE_CODE_ID", "")),
-                    "CHARGE_CODE_DESC": str(row.get("CHARGE_CODE_DESC", "")),
-                    "CHARGE_CODE_CLASSIFICATION": str(row.get("CHARGE_CODE_CLASSIFICATION", "")),
-                    "CHARGE_TOTAL_AMOUNT": round(float(row["CHARGE_TOTAL_AMOUNT"]), 2),
-                    "CHARGE_NET_AMOUNT": round(float(row["CHARGE_NET_AMOUNT"]), 2),
-                    "GRUPO": str(row.get("GRUPO", "")),
-                    "SUB_GRUPO": str(row.get("SUB_GRUPO", "")),
-                })
+        cargos_individuales = []
+        for _, row in df_fact_filtered.iterrows():
+            cargos_individuales.append(FacturacionCliente(
+                financial_account_key=_texto(row.get("FINANCIAL_ACCOUNT_KEY")),
+                customer_key=_texto(row.get("CUSTOMER_KEY")),
+                billing_arrangement_key=_texto(row.get("BILLING_ARRANGEMENT_KEY")),
+                legal_invoice_number=_texto(row.get("LEGAL_INVOICE_NUMBER")),
+                billing_cycle_key=int(row["BILLING_CYCLE_KEY"]) if pd.notna(row.get("BILLING_CYCLE_KEY")) else None,
+                charge_net_amount=float(row.get("CHARGE_NET_AMOUNT", 0.0)),
+                charge_total_amount=float(row.get("CHARGE_TOTAL_AMOUNT", 0.0)),
+                charge_code_id=_texto(row.get("CHARGE_CODE_ID")),
+                charge_code_desc=_texto(row.get("CHARGE_CODE_DESC")),
+                charge_code_classification=_texto(row.get("CHARGE_CODE_CLASSIFICATION")),
+                subscriber_key=_texto(row.get("SUBSCRIBER_KEY")),
+                period_start_date=_texto(row.get("PERIOD_START_DATE")),
+                period_end_date=_texto(row.get("PERIOD_END_DATE")),
+                ciclo=_texto(row.get("ciclo")),
+                grupo=_texto(row.get("GRUPO")),
+                sub_grupo=_texto(row.get("SUB_GRUPO")),
+                fecha_vencimiento=_texto(row.get("FECHA-VENCIMIENTO")),
+                deuda=_texto(row.get("DEUDA")),
+            ))
 
-            # Conservar información de factura (req #10) — tomar del primer row del grupo
-            first_row = group.iloc[0]
-            info_factura = {
-                "CUSTOMER_KEY": str(first_row.get("CUSTOMER_KEY", "")),
-                "BILLING_ARRANGEMENT_KEY": str(first_row.get("BILLING_ARRANGEMENT_KEY", "")),
-                "LEGAL_INVOICE_NUMBER": str(first_row.get("LEGAL_INVOICE_NUMBER", "")),
-                "BILLING_CYCLE_KEY": str(first_row.get("BILLING_CYCLE_KEY", "")),
-                "SUBSCRIBER_KEY": str(first_row.get("SUBSCRIBER_KEY", "")),
-                "PERIOD_START_DATE": str(first_row.get("PERIOD_START_DATE", "")),
-                "PERIOD_END_DATE": str(first_row.get("PERIOD_END_DATE", "")),
-                "FECHA_VENCIMIENTO": str(first_row.get("FECHA-VENCIMIENTO ", first_row.get("FECHA-VENCIMIENTO", ""))).strip(),
-                "DEUDA": str(first_row.get("DEUDA", "")),
-            }
+        # Inserción por lotes para evitar sobrecargar la conexión
+        for i in range(0, len(cargos_individuales), BATCH_SIZE):
+            db.add_all(cargos_individuales[i:i + BATCH_SIZE])
+            db.commit()
 
-            recibos_a_insertar.append(
-                ReciboCliente(
-                    user_id=str(account_id),
-                    mes_emision=mes_emision,
-                    monto_total=monto_total,
-                    fecha_emision=fecha_emision,
-                    conceptos_facturados={
-                        "cargos": conceptos_facturados,
-                        "info_factura": info_factura,
-                    },
-                    plan_actual=None,  # No asignar plan ficticio (req #5, #8)
-                )
-            )
-
-        db.add_all(recibos_a_insertar)
+        print(f"  -> {len(cargos_individuales)} cargos individuales insertados y confirmados en 'facturacion_clientes'.")
 
         # ------------------------------------------------------------------
         # 5. Poblar ContactosUsuario
         # ------------------------------------------------------------------
-        print("Creando contactos de usuario...")
-        contactos_a_insertar = []
-
-        for account_id in unique_accounts:
-            acc_str = str(account_id)
-
-            # Determinar número de teléfono real (req #7)
-            # No hay PRIMARY_RESOURCE_VALUE en el dataset; telefono_hash no es utilizable.
-            # Dejar whatsapp_number = None.
-            whatsapp_number = None
-
-            contactos_a_insertar.append(
-                ContactoUsuario(
-                    user_id=acc_str,
-                    whatsapp_number=whatsapp_number,
-                    telegram_chat_id=None,
-                )
+        # Se descartan primero los marcadores de posición de ingestas anteriores:
+        # contactos sin ningún canal configurado cuya cuenta ya no está cargada.
+        # Sin esta limpieza la tabla acumula cuentas inexistentes en cada corrida.
+        # Los contactos CON canal (WhatsApp/Telegram reales) nunca se tocan.
+        objetivo = {str(a) for a in target_accounts}
+        huerfanos = (
+            db.query(ContactoUsuario)
+            .filter(
+                ContactoUsuario.whatsapp_number.is_(None),
+                ContactoUsuario.telegram_chat_id.is_(None),
             )
+            .all()
+        )
+        eliminados = 0
+        for contacto in huerfanos:
+            if str(contacto.user_id) not in objetivo:
+                db.delete(contacto)
+                eliminados += 1
+        if eliminados:
+            db.commit()
+            print(f"  -> {eliminados} contacto(s) sin canal de ingestas previas eliminados.")
 
-        db.add_all(contactos_a_insertar)
+        existing_contacts = {c[0] for c in db.query(ContactoUsuario.user_id).all()}
+        contactos_a_insertar = [
+            ContactoUsuario(user_id=str(acc), whatsapp_number=None, telegram_chat_id=None)
+            for acc in target_accounts if str(acc) not in existing_contacts
+        ]
+        for i in range(0, len(contactos_a_insertar), BATCH_SIZE):
+            db.add_all(contactos_a_insertar[i:i + BATCH_SIZE])
+            db.commit()
+        print(f"  -> {len(contactos_a_insertar)} contacto(s) de cuenta registrados.")
 
         # ------------------------------------------------------------------
-        # 6. Poblar OrdenCliente (historial de órdenes CRM/OSS)
+        # 6. Ingerir PLANTA_CLIENTES.csv
         # ------------------------------------------------------------------
-        print("Cargando órdenes...")
-        try:
-            df_ordenes = pd.read_csv(PATH_ORDENES)
-        except Exception as e:
-            print(f"  Aviso: no se pudo leer Ordenes.csv ({e}). Se omite la ingesta de órdenes.")
-            df_ordenes = pd.DataFrame()
+        if PATH_PLANTA.exists():
+            print(f"Cargando {PATH_PLANTA.name}...")
+            df_planta = pd.read_csv(PATH_PLANTA, sep=";", dtype=str)
+            df_planta.columns = [c.strip() for c in df_planta.columns]
+            df_planta["FINANCIAL_ACCOUNT"] = df_planta["FINANCIAL_ACCOUNT"].apply(_normalize_key)
+            df_planta["COD_CLIENTE"] = df_planta["COD_CLIENTE"].apply(_normalize_key)
 
-        if not df_ordenes.empty:
-            # Normalizar CUSTOMER_KEY para el join
-            df_ordenes["CUSTOMER_KEY"] = df_ordenes["CUSTOMER_KEY"].astype(str).str.strip()
-
-            # Solo ingerir órdenes de los CUSTOMER_KEYs que ya están en los recibos cargados.
-            # La relación Cargos→Ordenes es vía CUSTOMER_KEY (presente en info_factura de cada recibo).
-            customer_keys_ingeridos = set()
-            for r in recibos_a_insertar:
-                ck = (r.conceptos_facturados or {}).get("info_factura", {}).get("CUSTOMER_KEY", "")
-                if ck:
-                    customer_keys_ingeridos.add(ck)
-
-            df_ordenes_filtrado = df_ordenes[df_ordenes["CUSTOMER_KEY"].isin(customer_keys_ingeridos)]
-            print(f"  {len(df_ordenes_filtrado)} órdenes corresponden a las {len(customer_keys_ingeridos)} cuentas ingeridas.")
-
-            ordenes_a_insertar = []
-            for _, row in df_ordenes_filtrado.iterrows():
-                start_dt = None
-                completion_dt = None
-                try:
-                    start_dt = pd.to_datetime(row.get("ORDER_ACTION_START_DATE"))
-                except Exception:
-                    pass
-                try:
-                    completion_dt = pd.to_datetime(row.get("ORDER_ACTION_COMPLETION_DATE"))
-                except Exception:
-                    pass
-
-                ordenes_a_insertar.append(OrdenCliente(
-                    customer_key=str(row["CUSTOMER_KEY"]),
-                    subscriber_key=str(row.get("SUBSCRIBER_KEY", "")),
-                    order_type=str(row.get("ORDER_ITEM_TYPE_DESC", "")),
-                    order_reason=str(row.get("ORDER_ACTION_REASON_DESC", "")),
-                    start_date=start_dt,
-                    completion_date=completion_dt,
+            df_planta_filtered = df_planta[df_planta["FINANCIAL_ACCOUNT"].isin(target_accounts)]
+            planta_objs = []
+            for _, r in df_planta_filtered.iterrows():
+                planta_objs.append(PlantaCliente(
+                    cod_cliente=_texto(r.get("COD_CLIENTE")),
+                    financial_account=_texto(r.get("FINANCIAL_ACCOUNT")),
+                    num_anexo=_texto(r.get("NUM_ANEXO")),
+                    telefono_hash=_texto(r.get("telefono_hash")),
+                    fecha_activacion_original=_texto(r.get("fecha_activacion_original")),
+                    ciclo=_texto(r.get("ciclo")),
+                    lob_type=_texto(r.get("lob_type")),
+                    negocio=_texto(r.get("negocio")),
                 ))
-
-            db.add_all(ordenes_a_insertar)
-            print(f"  {len(ordenes_a_insertar)} órdenes preparadas para inserción.")
+            for i in range(0, len(planta_objs), BATCH_SIZE):
+                db.add_all(planta_objs[i:i + BATCH_SIZE])
+                db.commit()
+            print(f"  -> {len(planta_objs)} registros de planta de clientes agregados.")
 
         # ------------------------------------------------------------------
-        # Commit
+        # 7. Ingerir ORDENES.csv
+        # ------------------------------------------------------------------
+        if PATH_ORDENES.exists():
+            print(f"Cargando {PATH_ORDENES.name}...")
+            df_ord = pd.read_csv(PATH_ORDENES, sep=",")
+            df_ord.columns = [c.strip() for c in df_ord.columns]
+            df_ord["CUSTOMER_KEY"] = df_ord["CUSTOMER_KEY"].apply(_normalize_key)
+
+            df_ord_filtered = df_ord[df_ord["CUSTOMER_KEY"].isin(customer_keys_ingeridos)]
+            ordenes_objs = []
+            for _, r in df_ord_filtered.iterrows():
+                s_dt = pd.to_datetime(r.get("ORDER_ACTION_START_DATE"), errors="coerce")
+                c_dt = pd.to_datetime(r.get("ORDER_ACTION_COMPLETION_DATE"), errors="coerce")
+                ordenes_objs.append(OrdenCliente(
+                    customer_key=_texto(r.get("CUSTOMER_KEY")),
+                    subscriber_key=_texto(r.get("SUBSCRIBER_KEY")),
+                    order_type=_texto(r.get("ORDER_ITEM_TYPE_DESC")),
+                    order_reason=_texto(r.get("ORDER_ACTION_REASON_DESC")),
+                    start_date=s_dt if pd.notna(s_dt) else None,
+                    completion_date=c_dt if pd.notna(c_dt) else None,
+                ))
+            for i in range(0, len(ordenes_objs), BATCH_SIZE):
+                db.add_all(ordenes_objs[i:i + BATCH_SIZE])
+                db.commit()
+            print(f"  -> {len(ordenes_objs)} órdenes clientes agregadas.")
+
+        # ------------------------------------------------------------------
+        # 8. Ingerir NOTAS_CREDITO.csv
+        # ------------------------------------------------------------------
+        if PATH_NOTAS_CREDITO.exists():
+            print(f"Cargando {PATH_NOTAS_CREDITO.name}...")
+            df_nc = pd.read_csv(PATH_NOTAS_CREDITO, sep=",")
+            df_nc.columns = [c.strip() for c in df_nc.columns]
+            df_nc["RECEIVER_CUSTOMER"] = df_nc["RECEIVER_CUSTOMER"].apply(_normalize_key)
+            df_nc["BA_NO"] = df_nc["BA_NO"].apply(_normalize_key)
+
+            df_nc_filtered = df_nc[
+                (df_nc["RECEIVER_CUSTOMER"].isin(customer_keys_ingeridos)) |
+                (df_nc["BA_NO"].isin(target_accounts))
+            ]
+            nc_objs = []
+            for _, r in df_nc_filtered.iterrows():
+                eff_dt = pd.to_datetime(r.get("EFFECTIVE_DATE"), errors="coerce")
+                p_start = pd.to_datetime(r.get("PERIOD_START_DATE"), errors="coerce")
+                p_end = pd.to_datetime(r.get("PERIOD_END_DATE"), errors="coerce")
+                amt = float(pd.to_numeric(r.get("AMOUNT"), errors="coerce") or 0.0)
+
+                nc_objs.append(NotaCredito(
+                    receiver_customer=_texto(r.get("RECEIVER_CUSTOMER")),
+                    ba_no=_texto(r.get("BA_NO")),
+                    service_receiver_id=_texto(r.get("SERVICE_RECEIVER_ID")),
+                    charge_code=_texto(r.get("CHARGE_CODE")),
+                    cancel_charge_type=_texto(r.get("CANCEL_CHARGE_TYPE")),
+                    effective_date=eff_dt if pd.notna(eff_dt) else None,
+                    amount=amt,
+                    period_start_date=p_start if pd.notna(p_start) else None,
+                    period_end_date=p_end if pd.notna(p_end) else None,
+                    ciclo=_texto(r.get("CICLO")),
+                ))
+            for i in range(0, len(nc_objs), BATCH_SIZE):
+                db.add_all(nc_objs[i:i + BATCH_SIZE])
+                db.commit()
+            print(f"  -> {len(nc_objs)} notas de crédito agregadas.")
+
+        # ------------------------------------------------------------------
+        # Commit general
         # ------------------------------------------------------------------
         db.commit()
-        print(f"Datos reales ({len(unique_accounts)} cuentas, {len(recibos_a_insertar)} recibos) insertados en {engine.dialect.name}.")
+        print("-" * 70)
+        print(f"¡Ingesta exitosa en {engine.dialect.name}!")
+        print(f"Cuentas cargadas: {len(target_accounts)}")
+        print(f"Cargos en facturacion_clientes: {len(cargos_individuales)}")
 
-        # Imprimir credenciales de prueba
-        print("\n--- Credenciales para Testing (Web) ---")
-        for c in contactos_a_insertar[:5]:
-            print(f"  User ID: {c.user_id} | WhatsApp: {c.whatsapp_number or '(sin número)'}")
-        print("---------------------------------------")
+        print("\nEjemplos de cuentas listos para probar:")
+        for c in list(target_accounts)[:5]:
+            print(f"  - Account ID (user_id): {c}")
+        print("=" * 70)
 
     except Exception as e:
-        print(f"Error durante la ingesta: {e}")
+        print(f"[ERROR] Falló la ingesta: {e}")
         db.rollback()
         raise
     finally:
         db.close()
 
 
+def main():
+    parser = argparse.ArgumentParser(description="Ingesta de datos reales desde disclaimer/")
+    parser.add_argument("--reset", action="store_true", help="Limpia los datos previos antes de insertar.")
+    parser.add_argument("--max-users", type=int, default=1000, help="Límite de cuentas únicas a cargar (0 para todas).")
+    args = parser.parse_args()
+
+    init_db(reset=args.reset, max_users=args.max_users)
+
+
 if __name__ == "__main__":
-    init_db()
+    main()

@@ -69,6 +69,7 @@ def _generate_mock_response(
     cross_sell_eligible: bool,
     pending_emotions: List[Dict],
     perfil_lexico: Optional[str] = None,
+    historial_conversacion: Optional[List[Dict[str, Any]]] = None,
     recommended_plan: Optional[Dict[str, Any]] = None,
     pending_issue_followup: bool = False,
 ) -> ChatResponse:
@@ -86,7 +87,7 @@ def _generate_mock_response(
     upcoming_alerts_list = deterministic_payload.get("upcoming_alerts") or []
     if upcoming_alerts_list and not pending_issue_followup:
         alert = upcoming_alerts_list[0]
-        messages.append(MessageChunk(text=f"Por cierto, noté que tu {alert.get('concepto')} termina el {alert.get('fecha_fin')}. ¡Avisado estás! Ahora, sobre tu consulta...", type="hook", delay_ms=0))
+        messages.append(MessageChunk(text=f"Por cierto, noté que tu beneficio \"{alert.get('concepto')}\" ya llegó a su último ciclo facturado. ¡Avisado estás! Ahora, sobre tu consulta...", type="hook", delay_ms=0))
     elif pending_emotions and not pending_issue_followup:
         # 3. Empatía por dudar de IA (ejemplo)
         # Check if it's an AI doubt emotion
@@ -96,7 +97,12 @@ def _generate_mock_response(
         else:
             messages.append(MessageChunk(text="Por cierto, entiendo tu preocupación anterior y estoy aquí para aclarar todo detalle 😊.", type="hook", delay_ms=0))
     elif not pending_issue_followup and not upcoming_alerts_list:
-        messages.append(MessageChunk(text="¡Hola! Soy Lucía. He analizado tus recibos al detalle para explicarte qué pasó.", type="hook", delay_ms=0))
+        tiene_historial = bool(historial_conversacion and len(historial_conversacion) > 0)
+        if tiene_historial:
+            messages.append(MessageChunk(text="Bien, déjame revisar tu estado de cuenta al detalle...", type="hook", delay_ms=0))
+        else:
+            messages.append(MessageChunk(text="Hola. Soy Lucía. He analizado tus recibos al detalle para explicarte qué pasó.", type="hook", delay_ms=0))
+
             
     delta = deterministic_payload.get('variation_amount', 0)
     evidence_list = deterministic_payload.get('evidence', [])
@@ -129,7 +135,10 @@ def _generate_mock_response(
         else:
             messages.append(MessageChunk(text="¡Cualquier otra duda sobre tu recibo, aquí estoy para ayudarte!", type="explanation", delay_ms=1000))
         
-    historial = [BillSummary(month=pb['month'], amount=pb['amount']) for pb in deterministic_payload.get('previous_bills', [])]
+    historial = [
+        BillSummary(month=pb['month'], amount=pb['amount'], ciclo=pb.get('ciclo'))
+        for pb in deterministic_payload.get('previous_bills', [])
+    ]
 
     upcoming_alerts = [UpcomingAlert(**a) for a in upcoming_alerts_list]
 
@@ -183,12 +192,15 @@ def generate_response(
         Está terminantemente prohibido usar cualquier otro símbolo o moneda (€, $, USD, EUR).
         Formato correcto: "S/ 119.90". Usa punto como separador decimal.
 
-        REGLA DE CONTINUIDAD (muy importante):
-        Abajo tienes los turnos recientes de esta misma conversación. Si ya le explicaste
-        al usuario esta variación de recibo en un turno anterior, NO la repitas de nuevo:
-        respondes directamente a lo que pregunta AHORA (asumiendo que ya conoce el contexto),
-        o solo añades el detalle nuevo que falte. Repetir la misma explicación en cada turno
-        genera la sensación de que no escuchas al usuario.
+        REGLA DE CONTINUIDAD Y SALUDOS (CRÍTICA):
+        - Si en 'HISTORIAL RECIENTE DE LA CONVERSACIÓN' ya hay mensajes previos (la conversación está en curso):
+          * NUNCA saludes con "¡Hola!", "Hola", "¡Hola de nuevo!" ni te vuelvas a presentar ("Soy Lucía...").
+          * Tu primer mensaje ("hook") debe ser una transición fluida y natural, por ejemplo:
+            "Bien, déjame revisar tu estado de cuenta...", "Revisando el detalle de tus recibos...", "Claro, aquí tengo la información:", o ir directamente a la respuesta.
+          * Repetir "¡Hola!" a mitad de una conversación suena robótico e interrumpido.
+        - Solo puedes usar "¡Hola!" o presentarte si es estrictamente el PRIMER turno de toda la sesión (historial vacío).
+        - Si ya le explicaste al usuario esta variación en un turno anterior, NO la repitas de nuevo:
+          responde directamente a lo que pregunta AHORA o añade solo el detalle nuevo.
 
         HISTORIAL RECIENTE DE LA CONVERSACIÓN:
         {historial_conversacion}
@@ -198,6 +210,7 @@ def generate_response(
         Empieza tu respuesta preguntando proactivamente si lograron solucionarlo o cómo le fue con eso, antes de atender su consulta actual).
 
         {format_instructions}
+
         
         INFORMACIÓN DETERMINISTA (Verdad absoluta, no la modifiques):
         {deterministic_payload}
@@ -282,14 +295,15 @@ def generate_response(
             print(f"Error con LLM DeepSeek: {e}. Fallback a Mock.")
             return _generate_mock_response(
                 session_id, user_message, deterministic_payload, rag_context,
-                cross_sell_eligible, pending_emotions, perfil_lexico, recommended_plan, pending_issue_followup
+                cross_sell_eligible, pending_emotions, perfil_lexico, historial_conversacion, recommended_plan, pending_issue_followup
             )
     else:
         # Usar el mock por defecto si no hay API KEY
         return _generate_mock_response(
             session_id, user_message, deterministic_payload, rag_context,
-            cross_sell_eligible, pending_emotions, perfil_lexico, recommended_plan, pending_issue_followup
+            cross_sell_eligible, pending_emotions, perfil_lexico, historial_conversacion, recommended_plan, pending_issue_followup
         )
+
 
 
 # ---------------------------------------------------------------------------
@@ -487,37 +501,67 @@ def classify_and_reply(
 
 _SYSTEM_ALERTA_PROACTIVA = """{identidad}
 
-TAREA
-Vas a iniciar tú la conversación (el usuario no te ha escrito). Redacta un
-mensaje breve, cálido y proactivo que avise sobre lo siguiente, usando
-EXCLUSIVAMENTE estos datos verificados (no inventes ningún dato adicional):
+DATOS VERIFICADOS DE LA ALERTA:
+- Concepto: {concepto}
+- Último ciclo facturado con el beneficio: {fecha_fin}
+- Duración pactada del beneficio: {duracion_pactada} mes(es)
+- Ciclos en que ya se facturó: {ciclos_facturados}
+- Impacto estimado en el recibo: {impacto_estimado}
 
-Concepto: {concepto}
-Fecha en que termina: {fecha_fin}
-Días restantes: {dias_restantes}
-Impacto estimado en el recibo: {impacto_estimado}
+CONTEXTO DE LA CONVERSACIÓN:
+{contexto_conversacion}
 
-REGLAS
-- 1 a 2 frases, tono cercano, sin tecnicismos.
-- Menciona el impacto estimado usando exactamente el valor dado (ya viene con
-  el símbolo de moneda correcto). No inventes ni redondees otro monto.
-- Cierra invitando a la persona a preguntar si quiere más detalle o ver opciones.
+REGLAS DE REDACCIÓN:
+{reglas_contexto}
+- 1 a 2 frases, tono cercano y natural, sin tecnicismos ni frialdad.
+- Menciona el impacto estimado usando exactamente el valor dado ({impacto_estimado}). No inventes ni redondees otro monto.
+- El beneficio termina al completarse su duración pactada. Habla de "tu próximo recibo" o del ciclo indicado; NO inventes una fecha ni un número de días exactos.
+- Cierra invitando a la persona a preguntar si quiere más detalle o ver opciones para su plan.
 - No menciones puntajes, IDs, ni nada de la mecánica interna del sistema.
 """
 
 
-def generate_proactive_alert_message(alert: Dict[str, Any], perfil_lexico: Optional[str] = None) -> str:
+def generate_proactive_alert_message(
+    alert: Dict[str, Any],
+    perfil_lexico: Optional[str] = None,
+    historial_conversacion: Optional[List[Dict[str, Any]]] = None
+) -> str:
     """
-    Redacta el texto de una alerta proactiva a partir de un upcoming_alert ya
-    calculado de forma determinista. Si el LLM no está disponible, usa una
-    plantilla fija (sin inventar nada, solo interpola los mismos datos verificados).
+    Redacta el texto de una alerta proactiva a partir de un upcoming_alert.
+    Si detecta que ya existe una conversación previa activa, adapta la redacción
+    para no interrumpir con un '¡Hola!' frío y conectar naturalmente con el contexto.
     """
-    fallback = (
-        f"¡Hola! Quería avisarte con tiempo: tu {alert.get('concepto', 'promoción')} "
-        f"termina el {alert.get('fecha_fin')} (en {alert.get('dias_restantes')} días). "
-        f"El impacto estimado en tu próximo recibo sería de {alert.get('impacto_estimado')}. "
-        "¿Quieres que revisemos juntos tus opciones?"
-    )
+    tiene_historial = bool(historial_conversacion and len(historial_conversacion) > 0)
+    duracion = alert.get("duracion_pactada_meses")
+    detalle_duracion = f" (estaba pactado por {duracion} mes(es))" if duracion else ""
+
+    if tiene_historial:
+        fallback = (
+            f"Por cierto, quería comentarte un detalle importante sobre tu línea: tu beneficio "
+            f"\"{alert.get('concepto', 'promoción')}\"{detalle_duracion} finaliza en este ciclo ({alert.get('fecha_fin')}), "
+            f"lo que representará un aumento estimado de {alert.get('impacto_estimado')} en tu próximo recibo. "
+            "Si deseas, podemos revisar juntos alternativas para tu plan."
+        )
+        contexto_conversacion = (
+            "Ya existe una conversación previa activa con este usuario en la sesión.\n"
+            f"Últimos mensajes intercambiados:\n{_formatear_historial(historial_conversacion[-4:])}"
+        )
+        reglas_contexto = (
+            "- NO saludes con un frío o desconectado '¡Hola!' ni actúes como si apenas estuvieras iniciando la conversación desde cero.\n"
+            "- Conecta con fluidez y naturalidad con la conversación en curso usando conectores como 'Por cierto...', 'Aprovechando que estamos en contacto...', 'Un detalle importante sobre tu línea...', o 'A propósito de lo que veníamos revisando...'"
+        )
+    else:
+        fallback = (
+            f"¡Hola! Quería avisarte con tiempo: tu beneficio "
+            f"\"{alert.get('concepto', 'promoción')}\"{detalle_duracion} ya llegó a su último "
+            f"ciclo facturado ({alert.get('fecha_fin')}). "
+            f"El impacto estimado en tu próximo recibo sería de {alert.get('impacto_estimado')}. "
+            "¿Quieres que revisemos juntos tus opciones?"
+        )
+        contexto_conversacion = "El usuario no ha interactuado recientemente (primer contacto proactivo)."
+        reglas_contexto = (
+            "- Saluda amablemente al inicio ('¡Hola! Quería avisarte con tiempo sobre tu línea...')."
+        )
 
     if not llm_is_available():
         return fallback
@@ -528,16 +572,20 @@ def generate_proactive_alert_message(alert: Dict[str, Any], perfil_lexico: Optio
             identidad=persona.IDENTIDAD_LUCIA,
             concepto=alert.get("concepto", "Descuento activo"),
             fecha_fin=alert.get("fecha_fin"),
-            dias_restantes=alert.get("dias_restantes"),
+            duracion_pactada=alert.get("duracion_pactada_meses") or "no informada",
+            ciclos_facturados=alert.get("ciclos_facturados") or "no informado",
             impacto_estimado=alert.get("impacto_estimado"),
+            contexto_conversacion=contexto_conversacion,
+            reglas_contexto=reglas_contexto,
         )
         instruccion = persona.instruccion_registro(perfil_lexico)
         resultado = llm.invoke([
             ("system", system_prompt + f"\n\nGUÍA DE REGISTRO: {instruccion}"),
-            ("user", "Genera el mensaje proactivo."),
+            ("user", "Genera el mensaje proactivo adaptado al contexto."),
         ])
         texto = (getattr(resultado, "content", "") or "").strip()
         return texto or fallback
     except Exception as e:
         print(f"Error generando alerta proactiva con LLM: {e}. Se usará fallback.")
         return fallback
+

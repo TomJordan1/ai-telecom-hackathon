@@ -33,17 +33,6 @@ class MensajeProcesado(Base):
     recibido_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
-class ReciboCliente(Base):
-    __tablename__ = "recibos_cliente"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, index=True)
-    mes_emision = Column(String) # e.g. '2026-07'
-    monto_total = Column(Float)
-    fecha_emision = Column(DateTime)
-    conceptos_facturados = Column(JSON) # e.g. {"cargo_fijo": 99.90, "cuota_equipo": 20.00}
-    plan_actual = Column(String, nullable=True)
-    
 class HistorialInteracciones(Base):
     __tablename__ = "historial_interacciones"
     
@@ -54,21 +43,13 @@ class HistorialInteracciones(Base):
     score_sentimiento = Column(Integer, default=3)
     perfil_lexico_usuario = Column(String, default="CASUAL") # FORMAL, CASUAL, USO_JERGAS
     estado_resolucion = Column(Boolean, default=False)
+    en_atencion_humana = Column(Boolean, default=False) # True cuando un agente real toma el control
     historial_conversacion = Column(JSON, default=list)
     # Bitácora acotada de turnos recientes (no todo el historial, solo lo necesario
     # para dar continuidad): [{"role": "user"|"lucia", "text": "...", "intent": "..."}]
     # Sin esto el modelo no tiene forma de saber qué ya explicó en la sesión.
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-class CatalogoPlanes(Base):
-    __tablename__ = "catalogo_planes"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    nombre = Column(String)
-    precio = Column(Float)
-    beneficios = Column(String)
-    activo = Column(Boolean, default=True)
 
 class TerminosRestringidos(Base):
     __tablename__ = "terminos_restringidos"
@@ -159,3 +140,85 @@ class OrdenCliente(Base):
     order_reason = Column(String)         # ORDER_ACTION_REASON_DESC: Pedido de Cliente, Cobranza - Suspensión Parcial, etc.
     start_date = Column(DateTime, nullable=True)
     completion_date = Column(DateTime, nullable=True)
+
+
+class NotaCredito(Base):
+    """
+    Notas de crédito y ajustes financieros emitidos.
+    Fuente: disclaimer/NOTAS_CREDITO.csv.
+    """
+    __tablename__ = "notas_credito"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    receiver_customer = Column(String, index=True)      # CUSTOMER_KEY
+    ba_no = Column(String, index=True)                  # BA_NO / FINANCIAL_ACCOUNT_KEY
+    service_receiver_id = Column(String, nullable=True) # SUBSCRIBER_KEY
+    charge_code = Column(String, nullable=True)         # CHARGE_CODE
+    cancel_charge_type = Column(String, nullable=True)  # CANCEL_CHARGE_TYPE (DSC, CDR)
+    effective_date = Column(DateTime, nullable=True)
+    amount = Column(Float, default=0.0)
+    period_start_date = Column(DateTime, nullable=True)
+    period_end_date = Column(DateTime, nullable=True)
+    ciclo = Column(String, nullable=True)
+
+
+class PlantaCliente(Base):
+    """
+    Instancia del cliente en la planta de servicios (CRM/Billing).
+    Fuente: disclaimer/PLANTA_CLIENTES.csv.
+    """
+    __tablename__ = "planta_clientes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cod_cliente = Column(String, index=True)            # COD_CLIENTE / CUSTOMER_KEY
+    financial_account = Column(String, index=True)      # FINANCIAL_ACCOUNT / FINANCIAL_ACCOUNT_KEY
+    num_anexo = Column(String, nullable=True)
+    telefono_hash = Column(String, nullable=True)
+    fecha_activacion_original = Column(String, nullable=True)
+    ciclo = Column(String, nullable=True)
+    lob_type = Column(String, nullable=True)           # TV, MOVIL, BA, STB
+    negocio = Column(String, nullable=True)            # MT/CONVERGENTE, etc.
+
+
+class CatalogoOfertas(Base):
+    """
+    Catálogo oficial de ofertas y conceptos de facturación.
+    Fuente: disclaimer/CATALOGO_OFERTAS.csv.
+    """
+    __tablename__ = "catalogo_ofertas"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    charge_code = Column(String, index=True)            # CHARGE CODE
+    rate_final = Column(Float, default=0.0)             # rate_final
+    tipo_renta = Column(String, nullable=True)          # TIPO DE RENTA
+
+
+class FacturacionCliente(Base):
+    """
+    Cargos e ítems individuales de facturación de los clientes.
+    Fuente: disclaimer/FACTURACION_CLIENTES.csv.
+    Tabla independiente con relaciones a PlantaCliente y CatalogoOfertas.
+    """
+    __tablename__ = "facturacion_clientes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    financial_account_key = Column(String, index=True)   # FINANCIAL_ACCOUNT_KEY
+    customer_key = Column(String, index=True)            # CUSTOMER_KEY
+    billing_arrangement_key = Column(String, nullable=True)
+    legal_invoice_number = Column(String, index=True)    # LEGAL_INVOICE_NUMBER
+    billing_cycle_key = Column(Integer, nullable=True)
+    charge_net_amount = Column(Float, default=0.0)
+    charge_total_amount = Column(Float, default=0.0)
+    charge_code_id = Column(String, index=True)          # CHARGE_CODE_ID
+    charge_code_desc = Column(String, nullable=True)
+    charge_code_classification = Column(String, nullable=True)
+    subscriber_key = Column(String, nullable=True)
+    period_start_date = Column(String, nullable=True)
+    period_end_date = Column(String, nullable=True)
+    ciclo = Column(String, index=True)                  # ciclo (YYYYMMDD)
+    grupo = Column(String, nullable=True)
+    sub_grupo = Column(String, nullable=True)
+    fecha_vencimiento = Column(String, nullable=True)
+    deuda = Column(String, nullable=True)
+
+

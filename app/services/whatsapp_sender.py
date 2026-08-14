@@ -20,6 +20,7 @@ def send_whatsapp_text(to_number: str, text: str):
         print(f"[MOCK WA] A {to_number}: {text}")
         return
 
+    clean_number = "".join(filter(str.isdigit, str(to_number)))
     url = _endpoint_mensajes()
     headers = {
         "Authorization": f"Bearer {settings.WHATSAPP_TOKEN}",
@@ -27,10 +28,11 @@ def send_whatsapp_text(to_number: str, text: str):
     }
     payload = {
         "messaging_product": "whatsapp",
-        "to": to_number,
+        "to": clean_number,
         "type": "text",
         "text": {"body": text}
     }
+
     
     try:
         response = requests.post(url, headers=headers, json=payload)
@@ -65,11 +67,13 @@ def send_whatsapp_interactive(to_number: str, text: str, buttons: list):
             }
         })
 
+    clean_number = "".join(filter(str.isdigit, str(to_number)))
     payload = {
         "messaging_product": "whatsapp",
-        "to": to_number,
+        "to": clean_number,
         "type": "interactive",
         "interactive": {
+
             "type": "button",
             "body": {"text": text},
             "action": {"buttons": wa_buttons}

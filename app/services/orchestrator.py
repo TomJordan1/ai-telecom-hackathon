@@ -1,3 +1,4 @@
+import re
 import time
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -20,7 +21,50 @@ from app.services.uncertainty_calculator import calculate_uncertainty, requires_
 from app.services.feedback_handler import register_new_case
 from app.services.intent_classifier import route, PATRONES_SENSIBLES, has_billing_signals
 from app.services import persona
-from app.core.schemas import ChatRequest, ChatResponse, MessageChunk, PersonalityMetadata
+from app.core.schemas import (
+    ChatRequest,
+    ChatResponse,
+    MessageChunk,
+    PersonalityMetadata,
+    BillSummary,
+    ChargeBreakdownItem,
+    VariationBreakdownItem,
+    BillingAdjustments,
+)
+
+
+def _adjuntar_desgloses(response: ChatResponse, fact_payload: Dict[str, Any]) -> None:
+    """
+    Sobrescribe los desgloses de la respuesta con los del payload determinista.
+
+    Se hace SIEMPRE después de generar el texto, incluso cuando el LLM devolvió
+    algo en estos campos: son cifras y no se acepta la versión del modelo. Es la
+    misma política que ya se aplica a upcoming_alerts y al plan recomendado.
+    """
+    current_bill = fact_payload.get("current_bill") or {}
+    response.current_bill_breakdown = [
+        ChargeBreakdownItem(**item) for item in (current_bill.get("desglose") or [])
+    ]
+    response.variation_breakdown = [
+        VariationBreakdownItem(**item) for item in (fact_payload.get("variacion_por_categoria") or [])
+    ]
+
+    ajustes = fact_payload.get("ajustes_facturacion")
+    response.billing_adjustments = (
+        BillingAdjustments(
+            cantidad=ajustes.get("cantidad", 0),
+            total_notas_credito=ajustes.get("total_notas_credito", 0.0),
+            total_notas_debito=ajustes.get("total_notas_debito", 0.0),
+        )
+        if ajustes else None
+    )
+
+    # El historial de recibos también es un hecho verificado: se reconstruye del
+    # payload para que el LLM no pueda omitir ciclos ni alterar montos.
+    response.historical_bills_summary = [
+        BillSummary(month=pb.get("month", ""), amount=pb.get("amount", 0.0), ciclo=pb.get("ciclo"))
+        for pb in (fact_payload.get("previous_bills") or [])
+    ]
 
 
 def _texto_completo(response: ChatResponse) -> str:
@@ -120,18 +164,43 @@ def _finalizar(db: Session, request: ChatRequest, response: ChatResponse) -> Cha
     crud.append_turno_conversacion(
         db, request.session_id, "lucia", _texto_completo(response), response.intent_category
     )
+    if response.requires_human_intervention:
+        crud.update_historial(db, request.session_id, {"en_atencion_humana": True})
     return response
+
+
+# Marcadores de que el cliente pregunta por una CAUSA o una VARIACIÓN, no por un
+# dato puntual de su cuenta. Si aparecen, la consulta debe recorrer el pipeline
+# completo de explicación, no el atajo de lectura directa.
+#
+# Sin este control, "¿por qué cambió el monto de mi plan?" caía en el atajo por
+# contener "mi plan" y se respondía "tu plan es X", que no contesta la pregunta.
+_MARCADORES_CAUSA = re.compile(
+    r"\b(por\s*qu[eé]|porqu[eé]|raz[oó]n|motivo|caus[ao]|"
+    r"cambi[oó]|cambio|vari[oó]|subi[oó]|sub[ií]|baj[oó]|"
+    r"aument[oó]|increment[oó]|difer(?:encia|ente)|m[aá]s\s+car[oa]|"
+    r"explic[aá]|no\s+entiendo)\b",
+    re.IGNORECASE,
+)
 
 
 def _tipo_consulta_directa(message: str) -> Optional[str]:
     """
-    Identifica consultas que se responden solo con hechos del recibo actual.
+    Identifica consultas que se responden solo con un hecho verificado del
+    recibo actual, sin pasar por RAG ni por el modelo.
+
+    Solo aplica a preguntas por un DATO ("¿tengo deuda?", "¿qué plan tengo?").
+    Una pregunta por la CAUSA de un cambio comparte vocabulario con estas pero
+    necesita la explicación completa, así que se descarta primero.
 
     Nota: no hace falta excluir aquí "cancelar mi plan" ni similares — esas
     frases ya se capturan antes en intent_classifier.route() como
     SOLICITUD_SENSIBLE (máxima prioridad) y nunca llegan a este punto del
     pipeline de facturación.
     """
+    if _MARCADORES_CAUSA.search(message):
+        return None
+
     texto = message.lower()
     if any(termino in texto for termino in ("deuda", "deudas", "saldo pendiente", "pendiente de pago")):
         return "DEUDA"
@@ -477,12 +546,85 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
 
     # Paso 3: Motor Investigador (Determinista)
     components_invoked.append("deterministic_engine")
+
+    # Detección de cuenta en el texto del mensaje para auto-asociar la sesión
+    match_cuenta = re.search(
+        r"\b(?:cuenta|mi\s+cuenta(?:\s+es)?|vincular(?:\s+cuenta)?|asociar|id|cliente|codigo|c[oó]digo)\s*[:=]?\s*([0-9]{6,12})\b",
+        request.message,
+        re.IGNORECASE
+    )
+    if not match_cuenta and re.fullmatch(r"[0-9]{6,12}", request.message.strip()):
+        match_cuenta = re.search(r"([0-9]{6,12})", request.message.strip())
+
+    if match_cuenta:
+        cuenta_detectada = match_cuenta.group(1)
+        if crud.verificar_existe_cuenta(db, cuenta_detectada):
+            request.user_id = cuenta_detectada
+            crud.update_historial(db, request.session_id, {"user_id": cuenta_detectada})
+
     fact_payload = calculate_billing_facts(request.user_id, db)
+
+    # Manejo de usuarios visitantes (no clientes o sin cuenta identificada aún)
+    if "error" in fact_payload:
+        # 1. Si preguntan explícitamente por un recibo específico sin cuenta vinculada:
+        pregunta_facturacion_personal = any(
+            w in request.message.lower()
+            for w in ["recibo", "factura", "mi cobro", "deuda", "por qué subió", "por que subio", "cuanto debo", "mi saldo", "desglose"]
+        )
+        if pregunta_facturacion_personal:
+            response = ChatResponse(
+                session_id=request.session_id,
+                intent_category="CONSULTA_SIN_CUENTA",
+                sentiment_score=3,
+                confidence_score=95,
+                messages=[
+                    MessageChunk(
+                        text="Para revisar el detalle y la variación de tus recibos específicos, por favor indícame tu número de cuenta financiera (ej. `102968745`) o selecciona una de nuestras cuentas de prueba. Si no eres cliente, dime qué planes te gustaría conocer. 😊",
+                        type="explanation"
+                    )
+                ],
+                personality_metadata=PersonalityMetadata(
+                    lucia_tone=persona.tono_para_metadata(perfil_lexico)
+                )
+            )
+            _registrar_auditoria(
+                db, request.session_id, started_at, response.intent_category, components_invoked,
+                confidence_score=response.confidence_score
+            )
+            return _finalizar(db, request, response)
+
+        # 2. Si es una consulta informativa general (planes, servicios, fibra, etc.):
+        rag_context = retrieve_context(request.message)
+        response = generate_response(
+            session_id=request.session_id,
+            user_message=request.message,
+            deterministic_payload={
+                "moneda": "PEN",
+                "simbolo_moneda": "S/",
+                "current_bill": {"amount": 0.0, "issue_date": "N/A", "desglose": []},
+                "variation_amount": 0.0,
+                "detected_event": "CONSULTA_GENERAL_PLANES",
+                "evidence": ["Consulta informativa de visitante sobre catálogo y servicios."]
+            },
+            rag_context=rag_context,
+            cross_sell_eligible=False,
+            pending_emotions=pending_emotions,
+            perfil_lexico=perfil_lexico,
+            historial_conversacion=historial_conversacion,
+        )
+        response.confidence_score = 95
+        response.intent_category = "CONSULTA_GENERAL_PLANES"
+        _registrar_auditoria(
+            db, request.session_id, started_at, response.intent_category, components_invoked,
+            confidence_score=response.confidence_score
+        )
+        return _finalizar(db, request, response)
 
     # Paso 3.5: Case Matcher — ¿existe una solución validada para este patrón?
     components_invoked.append("case_matcher")
     caso_match = match_caso(db, fact_payload)
     caso_id_origen = None  # Se usará para registrar feedback después
+
 
     if caso_match:
         caso_id_origen, solucion_conocida = caso_match
@@ -559,6 +701,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     )
     if respuesta_directa:
         components_invoked.append("verified_account_lookup")
+        _adjuntar_desgloses(respuesta_directa, fact_payload)
         campo_verificado = (
             bool(fact_payload.get("estado_deuda"))
             if respuesta_directa.intent_category == "CONSULTA_DEUDA"
@@ -608,7 +751,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     recommended_plan = None
     if cross_sell_eligible:
         components_invoked.append("plan_catalog")
-        recommended_plan = recommend_plan_upgrade(db, fact_payload.get("plan_actual"))
+        recommended_plan = recommend_plan_upgrade(db, fact_payload.get("plan_charge_code"))
         if not recommended_plan:
             cross_sell_eligible = False  # sin candidato real verificado, no se ofrece nada
 
@@ -632,6 +775,9 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     # Señal visible del diferenciador: ¿esta respuesta reutilizó conocimiento ya
     # validado por un humano/feedback, o se generó desde cero (caso nuevo)?
     response.caso_validado = caso_match is not None
+
+    # Los desgloses y el historial se imponen desde el payload verificado.
+    _adjuntar_desgloses(response, fact_payload)
 
     # La clasificación del turno es un hecho determinista, no una opinión del
     # modelo: si se deja la que devuelve el LLM aparecen etiquetas inventadas

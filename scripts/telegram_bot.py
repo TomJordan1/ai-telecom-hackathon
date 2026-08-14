@@ -9,11 +9,33 @@ from telegram.constants import ChatAction
 # Cargar variables de entorno
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-API_URL = "http://127.0.0.1:8000/api/v1/chat"
+API_BASE = os.getenv("LUCIA_API_BASE", "http://127.0.0.1:8000/api/v1")
+API_URL = f"{API_BASE}/chat"
+CUENTA_DEMO_URL = f"{API_BASE}/cuenta-demo"
 
-# Por defecto, fingiremos ser el usuario A para probar el flujo de fin de promoción
-# En un sistema real, mapearíamos update.effective_user.id a una cuenta en DB.
-MOCK_USER_ID = "user_a_fin_promo"
+# Cuenta financiera con la que este bot consulta la API.
+#
+# En producción se resolvería el chat_id de Telegram contra contactos_usuario.
+# Para la demo se toma una cuenta real del dataset: se puede fijar con
+# DEMO_ACCOUNT_ID en el .env o dejar que el backend la resuelva. Antes había
+# aquí un identificador del set ficticio que dejó de existir al migrar al
+# dataset real, y todas las consultas del bot fallaban.
+CUENTA_DEMO = os.getenv("DEMO_ACCOUNT_ID")
+
+
+def resolver_cuenta_demo() -> str | None:
+    """Pregunta al backend qué cuenta usar si no viene fijada por entorno."""
+    global CUENTA_DEMO
+    if CUENTA_DEMO:
+        return CUENTA_DEMO
+    try:
+        respuesta = requests.get(CUENTA_DEMO_URL, timeout=10)
+        respuesta.raise_for_status()
+        CUENTA_DEMO = respuesta.json().get("cuenta_financiera")
+    except Exception as e:
+        print(f"[TELEGRAM] No se pudo resolver la cuenta de demostración: {e}")
+        return None
+    return CUENTA_DEMO
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -28,10 +50,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Notificar que el bot está escribiendo
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     
+    cuenta = resolver_cuenta_demo()
+    if not cuenta:
+        await update.message.reply_text(
+            "No pude identificar una cuenta con datos de facturación. "
+            "Verifica que el backend esté encendido y que se haya ejecutado "
+            "scripts/ingest_real_data.py."
+        )
+        return
+
     # 1. Enviar petición a nuestra API
     payload = {
         "session_id": session_id,
-        "user_id": MOCK_USER_ID,
+        "user_id": cuenta,
         "message": user_text,
         "channel": "telegram"
     }
@@ -94,6 +125,13 @@ def main():
         return
         
     print("Iniciando Bot de Telegram...")
+    cuenta = resolver_cuenta_demo()
+    if cuenta:
+        print(f"Cuenta financiera de demostración: {cuenta}")
+    else:
+        print("AVISO: no se pudo resolver la cuenta de demostración todavía. "
+              "Se reintentará en el primer mensaje.")
+
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
