@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import requests
 from dotenv import load_dotenv
@@ -36,6 +37,28 @@ def resolver_cuenta_demo() -> str | None:
         print(f"[TELEGRAM] No se pudo resolver la cuenta de demostración: {e}")
         return None
     return CUENTA_DEMO
+
+def _es_detalle_facturacion(text: str) -> bool:
+    """
+    Verifica que el texto realmente sea un desglose o detalle estructurado
+    de pagos, recibos o planes antes de anteponer '📊 *Detalle:*'.
+    """
+    texto_lower = text.lower().strip()
+    if any(p in texto_lower for p in [
+        "así que", "asi que", "tranqui", "aquí estoy", "aqui estoy",
+        "si necesitas", "cualquier duda", "cualquier consulta",
+        "estoy para ayudarte", "espero haberte", "que tengas",
+        "nada más que pagar", "nada mas que pagar"
+    ]):
+        return False
+
+    tiene_monto = bool(re.search(r"S/\.?\s*\d+|\b\d+(?:[\.,]\d{2})?\b", text))
+    tiene_concepto = any(k in texto_lower for k in [
+        "recibo", "factura", "cargo", "cuota", "plan", "desglose",
+        "descuento", "deuda", "monto", "total", "saldo"
+    ])
+    return tiene_monto and tiene_concepto
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -83,8 +106,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(delay)
             
         text = msg.get("text", "")
-        # Si es evidencia, lo formateamos bonito
-        if msg.get("type") == "evidence":
+        # Si es evidencia real de facturación/pago/plan, lo formateamos con Detalle
+        if msg.get("type") == "evidence" and _es_detalle_facturacion(text):
             text = f"📊 *Detalle:*\n`{text}`"
             
         await update.message.reply_text(text, parse_mode="Markdown")

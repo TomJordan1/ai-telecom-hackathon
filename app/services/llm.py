@@ -61,6 +61,45 @@ def _formatear_historial(turnos: Optional[List[Dict[str, Any]]], max_turnos: int
     return "\n".join(lineas) if lineas else "Sin turnos previos: es el inicio de la conversación."
 
 
+def _sanitizar_message_chunks(messages: List[MessageChunk]) -> List[MessageChunk]:
+    """
+    Garantiza que ningún texto conversacional, despedida o conclusión sea
+    etiquetado indebidamente como 'evidence'. El tipo 'evidence' queda
+    estrictamente reservado para desgloses de cifras, montos o conceptos de pago.
+    """
+    for msg in messages:
+        if msg.type == "evidence":
+            texto_lower = msg.text.lower().strip()
+
+            # Frases conversacionales de cierre, tranquilidad o despedida
+            es_cierre_conversacional = any(
+                p in texto_lower
+                for p in [
+                    "así que", "asi que", "tranqui", "aquí estoy", "aqui estoy",
+                    "si necesitas", "cualquier duda", "cualquier consulta",
+                    "estoy para ayudarte", "espero haberte", "que tengas",
+                    "no dudes en", "un gusto", "buen día", "buen dia",
+                    "nada más que pagar", "nada mas que pagar",
+                    "todo está al día", "todo esta al dia",
+                    "no te preocupes", "cuenta con nosotros"
+                ]
+            )
+
+            # Debe contener cifras o conceptos de facturación reales
+            tiene_cifras_o_desglose = bool(
+                re.search(r"S/\.?\s*\d+|\b\d+(?:[\.,]\d{2})?\b", msg.text)
+                or any(k in texto_lower for k in [
+                    "cargo", "descuento", "cuota", "prorrateo", "tráfico adicional",
+                    "recibo actual", "total a pagar", "saldo"
+                ])
+            )
+
+            if es_cierre_conversacional or not tiene_cifras_o_desglose:
+                msg.type = "explanation"
+
+    return messages
+
+
 def _generate_mock_response(
     session_id: str, 
     user_message: str, 
@@ -146,7 +185,7 @@ def _generate_mock_response(
         session_id=session_id,
         intent_category=intent_category,
         sentiment_score=3,
-        messages=messages,
+        messages=_sanitizar_message_chunks(messages),
         historical_bills_summary=historial,
         upcoming_alerts=upcoming_alerts,
         plan_optimizer_suggestion=suggestion,
@@ -201,6 +240,13 @@ def generate_response(
         - Solo puedes usar "¡Hola!" o presentarte si es estrictamente el PRIMER turno de toda la sesión (historial vacío).
         - Si ya le explicaste al usuario esta variación en un turno anterior, NO la repitas de nuevo:
           responde directamente a lo que pregunta AHORA o añade solo el detalle nuevo.
+
+        REGLA DE ESTRUCTURA Y TIPOS DE MENSAJE ('messages') (CRÍTICA):
+        Cada elemento en la lista 'messages' tiene un campo 'type'. Debes asignar los tipos con estricta precisión:
+        - "hook": Solo para el primer mensaje breve de saludo o transición contextual (ej: "Revisando tu recibo...", "Claro, te confirmo:").
+        - "explanation": Para TODO el cuerpo explicativo de la respuesta, motivos de variación, confirmaciones, estado de cuenta, efecto efervescente (beneficios de su plan) y despedidas, conclusiones o frases amables de cierre (ej: "Así que tranqui, no tienes nada más que pagar. Si necesitas revisar algo más...", "¡Cualquier otra duda aquí estoy!"). TODO texto conversacional, conclusión, frase tranquilizadora o despedida DEBE ser de tipo "explanation".
+        - "evidence": ÚNICA Y EXCLUSIVAMENTE para desgloses numéricos puntuales de montos, cargos específicos, pagos o líneas técnicas de facturación (ej: "Recibo actual (2026-07-21): S/ 39.90" o desglose de conceptos facturados con sus cifras).
+        NUNCA clasifiques como "evidence" textos de conclusión, frases tranquilizadoras, despedidas, recomendaciones o textos conversacionales. Si no contiene un desglose numérico o detalle técnico de pagos/planes/recibos, su tipo DEBE ser "explanation".
 
         HISTORIAL RECIENTE DE LA CONVERSACIÓN:
         {historial_conversacion}
@@ -287,6 +333,9 @@ def generate_response(
 
             # upcoming_alerts es un hecho determinista: no se deja que el LLM lo omita o invente.
             response_obj.upcoming_alerts = [UpcomingAlert(**a) for a in (deterministic_payload.get("upcoming_alerts") or [])]
+
+            # Sanitizar chunks para que 'evidence' solo contenga datos de facturación/pagos/planes reales
+            response_obj.messages = _sanitizar_message_chunks(response_obj.messages)
 
             return response_obj
             
