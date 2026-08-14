@@ -83,6 +83,16 @@ class RecommendedPlan(BaseModel):
                     "MENOR_TARIFA (misma modalidad de renta a menor precio).",
     )
 
+class NextBestAction(BaseModel):
+    """
+    Siguiente mejor acción recomendada (Next Best Action) para guiar la autogestión
+    del cliente (pagar recibo, ver desglose, derivar a asesor, explorar planes, etc.).
+    """
+    id: str = Field(..., description="PAY_BILL, VIEW_BREAKDOWN, HANDOFF_AGENT, EXPLORE_PLANS, REGISTER_RESOLVED, VINCULAR_CUENTA")
+    titulo: str = Field(..., description="Texto visible en el botón de acción rápida (ej: '💳 Pagar recibo', '📊 Ver desglose')")
+    tipo: str = Field(..., description="Categoría de la acción: pago, consulta, derivacion, comercial")
+    payload: Optional[Any] = None
+
 class PlanOptimizerSuggestion(BaseModel):
     available: bool = False
     mensaje_comercial: Optional[str] = None
@@ -107,6 +117,7 @@ class ChatResponse(BaseModel):
     billing_adjustments: Optional[BillingAdjustments] = None
     upcoming_alerts: List[UpcomingAlert] = []
     plan_optimizer_suggestion: PlanOptimizerSuggestion = PlanOptimizerSuggestion()
+    next_best_actions: List[NextBestAction] = []
     personality_metadata: PersonalityMetadata = PersonalityMetadata()
     handoff_context: Optional[Any] = None
     confidence_score: int = Field(99, ge=0, le=100)
