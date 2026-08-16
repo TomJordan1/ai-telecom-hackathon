@@ -130,7 +130,7 @@ async function loadChatHistory() {
     if (!currentChatSessionId) return;
     const historyDiv = document.getElementById("chat-history");
     try {
-        const data = await apiGet(`/admin/handoff/${currentChatSessionId}/historial`);
+        const data = await apiGet(`/admin/handoff/${currentChatSessionId}/historial?t=${Date.now()}`);
         historyDiv.innerHTML = "";
         const conv = data.historial_conversacion || [];
         conv.forEach(t => {
