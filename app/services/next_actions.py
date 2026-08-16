@@ -26,21 +26,30 @@ def resolve_next_actions(
     """
     actions: List[NextBestAction] = []
 
-    # 1. Caso: Derivación a atención humana
+    # 1. Caso: Derivación a atención humana (Control y elección del canal por el cliente)
     if response.requires_human_intervention:
         actions.append(
             NextBestAction(
-                id="HANDOFF_AGENT",
-                titulo="👤 Contactar asesor ahora",
+                id="CANAL_CHAT",
+                titulo="💬 Continuar por este chat",
                 tipo="derivacion",
-                payload={"motivo": response.intent_category},
+                payload={"canal": "CHAT", "motivo": response.intent_category},
             )
         )
         actions.append(
             NextBestAction(
-                id="NEW_INQUIRY",
-                titulo="🔄 Hacer otra consulta",
-                tipo="consulta",
+                id="CANAL_LLAMADA",
+                titulo="📞 Solicitar llamada telefónica",
+                tipo="derivacion",
+                payload={"canal": "LLAMADA", "motivo": response.intent_category},
+            )
+        )
+        actions.append(
+            NextBestAction(
+                id="CANAL_WHATSAPP",
+                titulo="📲 Continuar por WhatsApp",
+                tipo="derivacion",
+                payload={"canal": "WHATSAPP", "motivo": response.intent_category},
             )
         )
         return actions

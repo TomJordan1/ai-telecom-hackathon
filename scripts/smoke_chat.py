@@ -23,6 +23,10 @@ import sys
 import uuid
 from pathlib import Path
 
+# Ensure UTF-8 output on Windows consoles
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 import requests
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -36,7 +40,7 @@ from app.services.deterministic import calculate_billing_facts  # noqa: E402
 # Escenario -> pregunta con la que un cliente real llegaría al bot.
 PREGUNTAS = {
     "PRORRATEO_CAMBIO_PLAN": "por que me cobraron dos montos distintos este mes?",
-    "CUOTA_EQUIPO": "que es este cargo de cuota de equipo?",
+    "CUOTA_EQUIPO": "por que me cobran cuota de equipo este mes?",
     "RECONEXION_MOROSIDAD": "por que tengo un cargo de reconexion?",
     "FIN_PROMOCION": "por que subio mi recibo este mes?",
     "CAMBIO_PLAN": "por que cambio el monto de mi plan?",
@@ -84,6 +88,14 @@ def revisar_respuesta(evento_esperado, datos):
     if evento_esperado != "SIN_CAMBIOS" and not datos.get("variation_breakdown"):
         problemas.append("falta el desglose de la variación")
 
+    auditor = datos.get("auditor_breakdown")
+    if auditor:
+        m_ant = float(auditor.get("monto_anterior", 0.0))
+        m_act = float(auditor.get("monto_actual", 0.0))
+        s_imp = float(auditor.get("suma_impactos", 0.0))
+        if abs((m_ant + s_imp) - m_act) > 0.05:
+            problemas.append(f"Modo Auditor descuadrado: {m_ant} + {s_imp} != {m_act}")
+
     texto = " ".join(m.get("text", "") for m in datos.get("messages", []))
     if MONEDAS_PROHIBIDAS.search(texto):
         problemas.append("el texto menciona una moneda que no es soles")
@@ -98,6 +110,9 @@ def revisar_respuesta(evento_esperado, datos):
 
     if datos.get("confidence_score") is None:
         problemas.append("falta confidence_score")
+
+    if not isinstance(datos.get("confidence_reasons"), list):
+        problemas.append("falta la lista de confidence_reasons")
 
     return problemas
 
@@ -203,11 +218,65 @@ def main():
         else:
             print("  [OK] la respuesta cumple el contrato.")
 
+    # --- Test P0: Drill-down conversacional ---
+    print(f"\n{'=' * 70}")
+    print("  [TEST P0] Drill-down conversacional sobre un cargo específico")
+    print(f"{'=' * 70}")
+    cuenta_drill = cuentas.get("RECONEXION_MOROSIDAD") or list(cuentas.values())[0]
+    try:
+        r_drill = requests.post(
+            f"{args.base}/chat",
+            json={
+                "session_id": f"smoke-{corrida}-drilldown",
+                "user_id": cuenta_drill,
+                "message": "y ese cargo de reconexion que es?",
+                "channel": "web",
+            },
+            timeout=30,
+        )
+        r_drill.raise_for_status()
+        d_drill = r_drill.json()
+        if d_drill.get("intent_category") == "DRILL_DOWN_CARGO":
+            print(f"  [OK] Drill-down reconocido con éxito (intent: {d_drill.get('intent_category')})")
+            for m in d_drill.get("messages", []):
+                print(f"  Lucía: {m.get('text')}")
+        else:
+            print(f"  [AVISO] Drill-down devolvió intent: {d_drill.get('intent_category')}")
+    except Exception as e:
+        print(f"  [FALLO] Drill-down falló: {e}")
+        fallos += 1
+
+    # --- Test P0: Límite duro anti-loop ---
+    print(f"\n{'=' * 70}")
+    print("  [TEST P0] Límite duro anti-loop tras repreguntas no resueltas")
+    print(f"{'=' * 70}")
+    sesion_loop = f"smoke-{corrida}-antiloop"
+    cuenta_loop = list(cuentas.values())[0]
+    try:
+        # Turno 1: consulta
+        requests.post(f"{args.base}/chat", json={"session_id": sesion_loop, "user_id": cuenta_loop, "message": "por que cambio mi recibo?"})
+        # Turno 2: repregunta no resuelta
+        requests.post(f"{args.base}/chat", json={"session_id": sesion_loop, "user_id": cuenta_loop, "message": "sigo sin entender por que subio"})
+        # Turno 3: insiste -> debe gatillar anti-loop
+        r_loop = requests.post(f"{args.base}/chat", json={"session_id": sesion_loop, "user_id": cuenta_loop, "message": "no me queda claro nada"})
+        r_loop.raise_for_status()
+        d_loop = r_loop.json()
+        if d_loop.get("requires_human_intervention") or d_loop.get("intent_category") == "LIMITE_LOOP_DERIVACION_HUMANA":
+            print(f"  [OK] Anti-loop activado correctamente tras repreguntas (deriva: {d_loop.get('requires_human_intervention')})")
+            for m in d_loop.get("messages", []):
+                print(f"  Lucía: {m.get('text')}")
+        else:
+            print(f"  [FALLO] Anti-loop no forzó handoff a humano.")
+            fallos += 1
+    except Exception as e:
+        print(f"  [FALLO] Anti-loop test falló: {e}")
+        fallos += 1
+
     print(f"\n{'=' * 70}")
     if fallos:
         print(f"Resultado: {fallos} escenario(s) con problemas.")
         sys.exit(1)
-    print("Resultado: todos los escenarios probados cumplen el contrato.")
+    print("Resultado: todos los escenarios y pruebas P0 probados cumplen el contrato.")
 
 
 if __name__ == "__main__":

@@ -548,6 +548,23 @@ def marcar_handoff_atendido(db: Session, audit_log_id: int):
         db.refresh(entrada)
     return entrada
 
+
+def update_ultimo_handoff_channel(db: Session, session_id: str, canal: str):
+    """Actualiza el canal preferido del cliente en el último registro de handoff de la sesión."""
+    log = (
+        db.query(models.AuditLog)
+        .filter(models.AuditLog.session_id == session_id, models.AuditLog.requires_human_intervention == True)
+        .order_by(models.AuditLog.timestamp.desc())
+        .first()
+    )
+    if log and log.handoff_context:
+        ctx = dict(log.handoff_context)
+        ctx["canal_preferido"] = canal
+        log.handoff_context = ctx
+        db.commit()
+        db.refresh(log)
+    return log
+
 # --- Base de Casos ---
 
 def get_caso_conocido(db: Session, patron_problema: str):
@@ -597,13 +614,25 @@ def update_caso_cuarentena(db: Session, caso_id: str, updates: dict):
     return caso
 
 def promover_caso_a_base(db: Session, caso_id: str, validado_por: str = "AGENTE_MOVISTAR"):
-    """Mueve un caso aprobado de cuarentena a base_casos."""
+    """Mueve un caso aprobado de cuarentena a base_casos y genera sus embeddings."""
     caso = get_caso_cuarentena(db, caso_id)
     if not caso:
         return None
+
+    condiciones = dict(caso.evidencias or {})
+    query_text = condiciones.get("user_message") or ""
+    if query_text:
+        try:
+            from app.services.embeddings import embed_query, embeddings_disponibles
+            if embeddings_disponibles():
+                condiciones["embedding"] = embed_query(query_text)
+                condiciones["query_ejemplo"] = query_text
+        except Exception as e:
+            print(f"[EMBED WARNING] No se pudo generar vector para caso promovido: {e}")
+
     nuevo_caso_base = models.BaseCasos(
         patron_problema=caso.patron_detectado,
-        condiciones=caso.evidencias,
+        condiciones=condiciones,
         solucion_estructurada=caso.solucion_propuesta,
         validado_por=validado_por
     )

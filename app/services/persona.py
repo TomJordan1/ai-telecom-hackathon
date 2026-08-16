@@ -78,15 +78,22 @@ PRINCIPIO CONVERSACIONAL:
 - No converses por conversar ni añadas información irrelevante solo para
   parecer más humana.
 
-PRECISIÓN FINANCIERA:
+PRECISIÓN FINANCIERA Y VERBALIZACIÓN DE LÍMITES:
 - Cuando hables de montos, fechas, cargos, descuentos, promociones, planes,
   cuotas o variaciones del recibo, debes ser estrictamente precisa.
 - Nunca completes un dato financiero que no esté disponible.
 - Nunca inventes una causa, monto, fecha o condición.
 - Si los datos disponibles permiten determinar la causa de una variación,
   explícalo directamente y en lenguaje sencillo.
-- Si existe incertidumbre o la información no permite determinar la causa,
-  dilo claramente y deriva al siguiente paso correspondiente.
+- VERBALIZACIÓN PROACTIVA DE CERTEZA Y LÍMITES: En lugar de mostrar solo números,
+  verbaliza activamente qué conoces con total certeza matemática y cuál es el límite
+  exacto de la información disponible (ej: "Puedo confirmarte con certeza que el cobro
+  subió S/ 16.58 por el fin del beneficio 'Descuento 20%', pero como no cuento con el contrato
+  digital para validar la renovación pactada, te comunico con un asesor").
+- TRANQUILIDAD Y PRESERVACIÓN DE CONTEXTO EN DERIVACIÓN: Siempre que se derive a un
+  asesor humano, confirma explícitamente al cliente que no tendrá que repetir su caso:
+  "Ya envié a tu asesor el expediente con todo el detalle de tu recibo y lo que acabamos
+  de revisar, así que no vas a tener que repetir nada. 🙏"
 - La naturalidad nunca debe estar por encima de la exactitud.
 - No especules para que la conversación parezca más humana.
 
@@ -282,3 +289,46 @@ def tono_para_metadata(perfil: str | None) -> str:
         PERFIL_CASUAL: "EMPATICA_Y_CLARA",
         PERFIL_JERGAS: "CERCANA_Y_COLOQUIAL",
     }[normalizar_perfil(perfil)]
+
+
+MENSAJE_HANDOFF_TRANQUILIDAD = (
+    "Ya envié a tu asesor el expediente con todo el detalle de tu recibo y lo que acabamos de revisar, "
+    "así que no vas a tener que repetir nada. 🙏"
+)
+
+
+def verbalizar_certeza_y_limites(
+    detected_event: str,
+    confidence_score: int,
+    confidence_reasons: list[str],
+    variation_amount: float = 0.0,
+) -> str:
+    """
+    Genera una declaración en lenguaje natural donde Lucía expresa con honestidad
+    qué hechos conoce con total certeza y qué límites tienen los datos disponibles.
+    """
+    if confidence_score >= 95:
+        return "Tengo total certeza matemática sobre estos montos porque coinciden exactamente con los registros oficiales de tu recibo."
+
+    if detected_event == "FIN_PROMOCION":
+        return (
+            "Puedo confirmarte con certeza matemática el fin del descuento en tu facturación, "
+            "pero como no cuento con el contrato digital para verificar acuerdos de renovación, "
+            "te comunico con un asesor para validar opciones comerciales."
+        )
+    elif detected_event == "PRORRATEO_CAMBIO_PLAN":
+        return (
+            "Puedo detallarte con precisión los días cobrados de forma proporcional, "
+            "pero para validar la fecha exacta de corte en sistema te comunico con un asesor."
+        )
+    elif detected_event in ("INCREMENTO_OTROS", "CONSULTA_GENERAL"):
+        return (
+            "Veo con exactitud el total de tu recibo actual, pero no cuento con el registro "
+            "del ciclo anterior para comparar la causa exacta de la variación, por lo que "
+            "un asesor especializado tomará tu caso."
+        )
+    else:
+        return (
+            "Para garantizar que no haya ninguna duda sobre estos conceptos, "
+            "un asesor especializado verificará tu caso con el expediente que preparé."
+        )

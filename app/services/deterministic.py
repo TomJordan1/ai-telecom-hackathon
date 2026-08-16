@@ -245,6 +245,20 @@ def _descripciones_categoria(cargos: List[Dict[str, Any]], categoria: str, maxim
     return descripciones
 
 
+def _codigos_categoria(cargos: List[Dict[str, Any]], categoria: str, maximo: int = 5) -> List[str]:
+    """Códigos CHARGE_CODE_ID reales de los cargos de una categoría."""
+    codigos = []
+    for cargo in cargos:
+        if clasificar_cargo(cargo) != categoria:
+            continue
+        code = str(cargo.get("CHARGE_CODE_ID") or "").strip()
+        if code and code not in codigos:
+            codigos.append(code)
+        if len(codigos) >= maximo:
+            break
+    return codigos
+
+
 def descomponer_variacion(
     cargos_actuales: List[Dict[str, Any]],
     cargos_pasados: List[Dict[str, Any]],
@@ -268,20 +282,193 @@ def descomponer_variacion(
         impacto = round(actual - pasado, 2)
         if abs(impacto) < 0.01:
             continue
+        fuente_cargos = cargos_actuales if abs(actual) >= abs(pasado) else cargos_pasados
         componentes.append({
             "categoria": categoria,
             "etiqueta": ETIQUETA_CATEGORIA.get(categoria, categoria),
             "monto_actual": actual,
             "monto_anterior": pasado,
             "impacto": impacto,
-            "conceptos": _descripciones_categoria(
-                cargos_actuales if abs(actual) >= abs(pasado) else cargos_pasados,
-                categoria,
-            ),
+            "conceptos": _descripciones_categoria(fuente_cargos, categoria),
+            "codigos_cargo": _codigos_categoria(fuente_cargos, categoria),
         })
 
     componentes.sort(key=lambda c: abs(c["impacto"]), reverse=True)
     return componentes
+
+
+def generar_auditor_breakdown(
+    current_bill_amount: float,
+    previous_bill_amount: float,
+    componentes: List[Dict[str, Any]],
+    cargos_actuales: List[Dict[str, Any]],
+    cargos_pasados: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Genera la estructura de Modo Auditor con la ecuación algebraica exacta y
+    el desglose trazable a cada código de cargo del CSV.
+    """
+    monto_anterior = round(float(previous_bill_amount or 0.0), 2)
+    monto_actual = round(float(current_bill_amount or 0.0), 2)
+    suma_impactos = round(sum(c.get("impacto", 0.0) for c in componentes), 2)
+    conciliado = abs((monto_anterior + suma_impactos) - monto_actual) < 0.05
+    diferencia = round(monto_actual - (monto_anterior + suma_impactos), 2)
+
+    # Detalle por ítem individual con código CSV exacto
+    items_auditor = []
+    for c in componentes:
+        codigos = c.get("codigos_cargo") or []
+        conceptos = c.get("conceptos") or []
+        codigo_str = ", ".join(codigos) if codigos else c.get("categoria", "N/A")
+        concepto_str = ", ".join(conceptos) if conceptos else c.get("etiqueta", "")
+        items_auditor.append({
+            "codigo_cargo": codigo_str,
+            "concepto": concepto_str,
+            "categoria": c.get("etiqueta", c.get("categoria", "")),
+            "monto_anterior": c.get("monto_anterior", 0.0),
+            "monto_actual": c.get("monto_actual", 0.0),
+            "impacto": c.get("impacto", 0.0),
+        })
+
+    return {
+        "monto_anterior": monto_anterior,
+        "monto_actual": monto_actual,
+        "suma_impactos": suma_impactos,
+        "conciliado": conciliado,
+        "diferencia_centimos": diferencia,
+        "desglose": items_auditor,
+    }
+
+
+_MARCADORES_DRILL_DOWN = re.compile(
+    r"\b(y ese cargo|y este cargo|que es ese|que es este|a que corresponde|que significa|"
+    r"expl[ií]came la l[ií]nea|detalle de la l[ií]nea|y el cobro de|y el cargo de|a que se debe el cargo)\b",
+    re.IGNORECASE,
+)
+
+
+def buscar_cargo_especifico(
+    cargos_actuales: List[Dict[str, Any]],
+    cargos_pasados: List[Dict[str, Any]],
+    user_message: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Detecta si la consulta del usuario apunta a una línea o monto específico de su recibo
+    (drill-down conversacional) y retorna la ficha técnica exacta de ese cargo.
+    """
+    msg_lower = user_message.lower().strip()
+
+    # 1. Extraer montos numéricos citados en la consulta
+    montos_encontrados = []
+    matches = re.findall(r"(?:s/\.?\s*|\$\s*)?(\d+(?:[.,]\d{1,2})?)\b", msg_lower)
+    for m in matches:
+        try:
+            val = float(m.replace(",", "."))
+            if val > 0:
+                montos_encontrados.append(val)
+        except ValueError:
+            pass
+
+    tiene_marcador_drill = bool(_MARCADORES_DRILL_DOWN.search(user_message))
+
+    # Para ser un drill-down específico debe citar un monto exacto o usar frase de drill-down
+    if not montos_encontrados and not tiene_marcador_drill:
+        return None
+
+    # 2. Palabras clave de categorías de facturación
+    keywords_map = {
+        "reconexi": CAT_RECONEXION,
+        "corte": CAT_RECONEXION,
+        "moros": CAT_RECONEXION,
+        "prorrateo": CAT_PRORRATEO,
+        "proporcional": CAT_PRORRATEO,
+        "equipo": CAT_FINANCIAMIENTO,
+        "cuota": CAT_FINANCIAMIENTO,
+        "terminal": CAT_FINANCIAMIENTO,
+        "celular": CAT_FINANCIAMIENTO,
+        "descuento": CAT_DESCUENTO,
+        "promo": CAT_DESCUENTO,
+        "bono": CAT_BONO,
+        "paquete": CAT_PAQUETES,
+        "adicional": CAT_TRAFICO,
+        "trafico": CAT_TRAFICO,
+        "tráfico": CAT_TRAFICO,
+        "roaming": CAT_TRAFICO,
+        "disney": CAT_PAQUETES,
+        "netflix": CAT_PAQUETES,
+        "hbo": CAT_PAQUETES,
+        "paramount": CAT_PAQUETES,
+        "cargo fijo": CAT_PLAN,
+    }
+
+    categoria_buscada = None
+    for kw, cat in keywords_map.items():
+        if kw in msg_lower:
+            categoria_buscada = cat
+            break
+
+    if not montos_encontrados and not categoria_buscada:
+        return None
+
+    todos_los_cargos = cargos_actuales + cargos_pasados
+    candidato = None
+
+    # Primero intentar match por monto
+    for m_buscado in montos_encontrados:
+        for c in todos_los_cargos:
+            monto_cargo = abs(_monto(c))
+            if abs(monto_cargo - m_buscado) < 0.05:
+                candidato = c
+                break
+        if candidato:
+            break
+
+    # Si no hubo match por monto pero hay marcador drill-down + categoría buscada
+    if not candidato and categoria_buscada and tiene_marcador_drill:
+        for c in todos_los_cargos:
+            if clasificar_cargo(c) == categoria_buscada and abs(_monto(c)) > 0:
+                candidato = c
+                break
+
+    if not candidato:
+        return None
+
+    monto = _monto(candidato)
+    codigo = str(candidato.get("CHARGE_CODE_ID") or "").strip()
+    descripcion = str(candidato.get("CHARGE_CODE_DESC") or "").strip()
+    grupo = str(candidato.get("GRUPO") or "").strip()
+    sub_grupo = str(candidato.get("SUB_GRUPO") or "").strip()
+    cat_final = clasificar_cargo(candidato)
+    etiqueta = ETIQUETA_CATEGORIA.get(cat_final, cat_final)
+
+    if cat_final == CAT_RECONEXION:
+        motivo_negocio = "Cargo administrativo aplicado por la reconexión del servicio tras una suspensión por pago fuera de fecha."
+    elif cat_final == CAT_PRORRATEO:
+        motivo_negocio = "Cobro proporcional correspondiente a los días efectivos de servicio utilizados en el ciclo de facturación."
+    elif cat_final == CAT_FINANCIAMIENTO:
+        motivo_negocio = "Cuota mensual correspondiente al financiamiento pactado de equipo o terminal."
+    elif cat_final == CAT_DESCUENTO:
+        motivo_negocio = "Descuento promocional aplicado sobre la tarifa base de tu servicio."
+    elif cat_final == CAT_BONO:
+        motivo_negocio = "Bonificación de datos, minutos o servicios incluida en tu ciclo."
+    elif cat_final == CAT_PAQUETES:
+        motivo_negocio = "Servicio de valor añadido (SVA) o suscripción a paquete contratado fuera del plan principal."
+    elif cat_final == CAT_TRAFICO:
+        motivo_negocio = "Consumo adicional efectuado fuera de la bolsa de minutos o gigas incluida en tu plan."
+    else:
+        motivo_negocio = f"Cargo registrado bajo la categoría de {etiqueta} en el sistema de facturación."
+
+    return {
+        "encontrado": True,
+        "codigo_cargo": codigo,
+        "descripcion": descripcion,
+        "monto": monto,
+        "categoria": cat_final,
+        "etiqueta": etiqueta,
+        "grupo": grupo,
+        "sub_grupo": sub_grupo,
+        "motivo_negocio": motivo_negocio,
+    }
 
 
 def _evidencia_componente(componente: Dict[str, Any]) -> str:
@@ -723,7 +910,17 @@ def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
             "detected_event": "NUEVO_CLIENTE",
             "evidence": ["Es el primer ciclo facturado disponible para esta cuenta."],
             "variacion_por_categoria": [],
+            "auditor_breakdown": {
+                "monto_anterior": 0.0,
+                "monto_actual": current_bill.monto_total,
+                "suma_impactos": 0.0,
+                "conciliado": True,
+                "diferencia_centimos": 0.0,
+                "desglose": [],
+            },
             "ordenes_contexto": [],
+            "cargos_actuales": cargos_actuales,
+            "cargos_pasados": [],
         }
 
     previous_bill = recibos_previos[0]
@@ -736,6 +933,14 @@ def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
 
     componentes = descomponer_variacion(cargos_actuales, cargos_pasados)
     detected_event = _detectar_evento(componentes, delta_m)
+
+    auditor_breakdown = generar_auditor_breakdown(
+        current_bill_amount=current_bill.monto_total,
+        previous_bill_amount=previous_bill.monto_total,
+        componentes=componentes,
+        cargos_actuales=cargos_actuales,
+        cargos_pasados=cargos_pasados,
+    )
 
     # La evidencia cita los componentes que realmente mueven la aguja, con sus
     # montos exactos. El LLM redacta sobre estas frases, no las recalcula.
@@ -769,7 +974,10 @@ def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
         "detected_event": detected_event,
         "evidence": evidence,
         "variacion_por_categoria": componentes,
+        "auditor_breakdown": auditor_breakdown,
         "ordenes_contexto": _obtener_ordenes_contexto(db, conceptos_actuales, detected_event),
+        "cargos_actuales": cargos_actuales,
+        "cargos_pasados": cargos_pasados,
     }
 
 

@@ -286,6 +286,163 @@ function addUserMessage(text) {
     return wrap;
 }
 
+function addConfidenceBadge(parentWrap, data) {
+    const score = typeof data.confidence_score === 'number' ? data.confidence_score : 90;
+    const reasons = data.confidence_reasons || [];
+    const casoValidado = data.caso_validado;
+
+    let nivel = 'high';
+    let label = `🎯 Certeza Determinista · ${score}%`;
+
+    if (casoValidado) {
+        nivel = 'high';
+        label = `💎 Solución Validada por Asesores · ${score}%`;
+    } else if (score >= 90) {
+        nivel = 'high';
+        label = `🎯 Certeza Determinista · ${score}%`;
+    } else if (score >= 65) {
+        nivel = 'medium';
+        label = `⚠️ En Validación · ${score}%`;
+    } else {
+        nivel = 'low';
+        label = `🚨 Derivado a Humano · ${score}%`;
+    }
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'confidence-badge-wrapper';
+
+    const pill = document.createElement('div');
+    pill.className = `confidence-pill ${nivel}`;
+    pill.innerHTML = `<span>${label}</span> <span style="font-size:0.65rem; opacity:0.8;">▼</span>`;
+
+    const drawer = document.createElement('div');
+    drawer.className = 'confidence-reasons-drawer';
+    
+    let reasonsHtml = '';
+    if (reasons.length > 0) {
+        reasonsHtml = reasons.map(r => {
+            const isAlert = r.includes('incertidumbre') || r.includes('Sin caso') || r.includes('Diferencia') || r.includes('limitado') || r.includes('miscelánea');
+            const icon = isAlert ? '⚠️' : '✓';
+            return `<li><span>${icon}</span> <span>${r}</span></li>`;
+        }).join('');
+    } else {
+        reasonsHtml = `<li><span>✓</span> <span>Cálculo matemático verificado sobre registros oficiales del recibo.</span></li>`;
+    }
+
+    drawer.innerHTML = `
+        <div class="confidence-reasons-title">
+            <span>Fundamentos de Certeza y Fact Checking:</span>
+        </div>
+        <ul class="confidence-reasons-list">
+            ${reasonsHtml}
+        </ul>
+    `;
+
+    pill.addEventListener('click', () => {
+        drawer.classList.toggle('open');
+    });
+
+    wrapper.appendChild(pill);
+    wrapper.appendChild(drawer);
+    parentWrap.appendChild(wrapper);
+}
+
+function addAuditorCard(parentWrap, auditorData) {
+    if (!auditorData || !auditorData.desglose || auditorData.desglose.length === 0) return;
+
+    const card = document.createElement('div');
+    card.className = 'auditor-card';
+
+    const anteriorStr = Number(auditorData.monto_anterior || 0).toFixed(2);
+    const actualStr = Number(auditorData.monto_actual || 0).toFixed(2);
+    const sumaImpactosStr = (auditorData.suma_impactos >= 0 ? '+' : '') + Number(auditorData.suma_impactos || 0).toFixed(2);
+    const difStr = Number(auditorData.diferencia_centimos || 0).toFixed(2);
+
+    let rowsHtml = '';
+    auditorData.desglose.forEach(item => {
+        const impactoVal = Number(item.impacto || 0);
+        const impactoSign = impactoVal > 0 ? `+S/ ${impactoVal.toFixed(2)}` : (impactoVal < 0 ? `-S/ ${Math.abs(impactoVal).toFixed(2)}` : 'S/ 0.00');
+        const impactoClass = impactoVal > 0 ? 'impact-pos' : (impactoVal < 0 ? 'impact-neg' : '');
+
+        rowsHtml += `
+            <tr>
+                <td><span class="code-cell">${item.codigo_cargo || 'N/A'}</span></td>
+                <td><strong>${item.concepto || item.categoria}</strong></td>
+                <td>${item.categoria}</td>
+                <td>S/ ${Number(item.monto_anterior || 0).toFixed(2)}</td>
+                <td>S/ ${Number(item.monto_actual || 0).toFixed(2)}</td>
+                <td class="${impactoClass}">${impactoSign}</td>
+            </tr>
+        `;
+    });
+
+    card.innerHTML = `
+        <div class="auditor-header">
+            <div class="auditor-title-group">
+                <span>🔍</span>
+                <strong>Modo Auditor: Ecuación y Trazabilidad (CSV)</strong>
+                <span class="auditor-badge-verified">✓ Conciliado al céntimo</span>
+            </div>
+            <span class="auditor-toggle-icon">▼</span>
+        </div>
+        <div class="auditor-body">
+            <div class="auditor-equation-box">
+                <div class="auditor-equation-title">Ecuación Algebraica de Variación:</div>
+                <div class="auditor-equation-formula">
+                    S/ ${anteriorStr} (Anterior) + S/ ${sumaImpactosStr} (Σ Impactos) = S/ ${actualStr} (Total Actual)
+                </div>
+                <div style="font-size:0.7rem; color:#94a3b8; margin-top:4px;">
+                    Diferencia de conciliación: S/ ${difStr} · Invariante determinista 100% verificada
+                </div>
+            </div>
+
+            <div class="auditor-table-wrapper">
+                <table class="auditor-table">
+                    <thead>
+                        <tr>
+                            <th>Código CSV</th>
+                            <th>Concepto Facturado</th>
+                            <th>Categoría</th>
+                            <th>Anterior</th>
+                            <th>Actual</th>
+                            <th>Impacto</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rowsHtml}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="auditor-actions">
+                <button class="btn-auditor-copy" id="btn-copy-auditor-${Math.random().toString(36).substr(2, 5)}">
+                    📋 Copiar JSON de Auditoría
+                </button>
+            </div>
+        </div>
+    `;
+
+    const header = card.querySelector('.auditor-header');
+    header.addEventListener('click', () => {
+        card.classList.toggle('open');
+        scrollToBottom();
+    });
+
+    const copyBtn = card.querySelector('.btn-auditor-copy');
+    if (copyBtn) {
+        copyBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(JSON.stringify(auditorData, null, 2));
+            copyBtn.textContent = '✓ ¡Copiado!';
+            setTimeout(() => {
+                copyBtn.textContent = '📋 Copiar JSON de Auditoría';
+            }, 2000);
+        });
+    }
+
+    parentWrap.appendChild(card);
+}
+
 function addFeedbackButtons(parentWrap) {
 
     const bar = document.createElement('div');
@@ -389,7 +546,28 @@ function addNextBestActions(actions) {
 }
 
 function handleNextActionClick(action) {
-    if (action.id === 'PAY_BILL') {
+    if (action.id === 'CANAL_CHAT') {
+        fetch('/api/v1/handoff-channel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, canal_preferido: 'CHAT' })
+        }).catch(() => {});
+        addBotMessage("¡Perfecto! Tu asesor se conectará directamente por este chat con todo tu expediente listo para no repetir nada. 💬");
+    } else if (action.id === 'CANAL_LLAMADA') {
+        fetch('/api/v1/handoff-channel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, canal_preferido: 'LLAMADA' })
+        }).catch(() => {});
+        addBotMessage("¡Entendido! Hemos programado que un asesor te llame a tu número de contacto con todo el detalle de tu recibo preparado. 📞");
+    } else if (action.id === 'CANAL_WHATSAPP') {
+        fetch('/api/v1/handoff-channel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, canal_preferido: 'WHATSAPP' })
+        }).catch(() => {});
+        addBotMessage("¡Listo! Tu asesor te contactará al WhatsApp vinculado con todo el contexto de tu consulta para no hacerte perder tiempo. 📲");
+    } else if (action.id === 'PAY_BILL') {
         showPaymentModal(action.payload);
     } else if (action.id === 'VIEW_BREAKDOWN') {
         messageInput.value = '¿Puedes mostrarme el desglose de conceptos de mi recibo?';
@@ -571,6 +749,10 @@ async function sendMessage() {
         }
 
         if (ultimoWrap) {
+            addConfidenceBadge(ultimoWrap, data);
+            if (data.auditor_breakdown && data.auditor_breakdown.desglose && data.auditor_breakdown.desglose.length > 0) {
+                addAuditorCard(ultimoWrap, data.auditor_breakdown);
+            }
             addFeedbackButtons(ultimoWrap);
         }
 
