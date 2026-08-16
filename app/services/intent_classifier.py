@@ -29,10 +29,6 @@ from app.services import persona
 # ---------------------------------------------------------------------------
 # Señales deterministas de facturación (alta precisión)
 # ---------------------------------------------------------------------------
-# Solo términos que difícilmente aparecen fuera de una consulta de facturación.
-# Deliberadamente NO se incluyen expresiones ambiguas ("por qué", "caro", "no
-# entiendo"): esas las resuelve el LLM con contexto.
-
 _BILLING_PATTERNS = [
     r"\b(recibo|recibos|factura|facturas|facturaci[oó]n|boleta)\b",
     r"\bcobr\w*",
@@ -45,15 +41,78 @@ _BILLING_PATTERNS = [
     r"\b(suspensi[oó]n|reconex\w*|moroso|cortaron|corte del servicio)\b",
     r"\bS/\s*\d+",
     r"\b\d+\s*soles\b",
+    # --- Categorías adicionales ---
+    r"\bnota\s+de\s+(cr[eé]dito|d[eé]bito)\b",
+    r"\b(NC|ND)\b",
+    r"\bcargo\s+(fijo|recurrente|[uú]nico)\b",
+    r"\bpaquete\b",
+    r"\bajuste\s+(por|de)\s+(suspensi[oó]n|d[ií]as)\b",
+    r"\brenta\s+(adelantada|vencida)\b",
+    r"\bvencimient\w*\b",
 ]
 
 # ---------------------------------------------------------------------------
-# Solicitud explícita de agente humano (máxima prioridad)
+# Solicitudes estructurales sensibles (bajas: cancelación, portabilidad;
+# altas: nueva línea, nuevo servicio)
 # ---------------------------------------------------------------------------
-# Es una señal estructural, no de contenido: independientemente del tema, si el
-# usuario pide hablar con una persona hay que honrarlo. Por eso se evalúa ANTES
-# que las señales de facturación (evita que "pásame con un asesor sobre mi plan"
-# se quede atrapado en el pipeline de facturación).
+_SOLICITUD_SENSIBLE_PATRONES: Dict[str, List[str]] = {
+    "CANCELACION_PLAN": [
+        r"\bcancel(ar|o|aci[oó]n)\b",
+        r"\bdar\s+de\s+baja\b",
+        r"\bbaja\s+(del|de\s+mi)?\s*(plan|servicio|l[ií]nea)\b",
+        r"\bdesactivar\s+(mi\s+)?(plan|l[ií]nea|servicio)\b",
+        r"\bdejar\s+(el\s+)?servicio\b",
+        r"\bterminar\s+(mi\s+)?contrato\b",
+    ],
+    "CAMBIO_PLAN": [
+        r"\bcambiar(me)?\s+(de|mi|el)\s+plan\b",
+        r"\bmigrar(me)?\s+(de|a\s+otro)\s+plan\b",
+        r"\bquiero\s+otro\s+plan\b",
+        r"\bpasar(me)?\s+a\s+otro\s+plan\b",
+        r"\bcambio\s+de\s+plan\b",
+    ],
+    "PORTABILIDAD": [
+        r"\bportabilidad\b",
+        r"\bportar\s+(mi\s+)?(n[uú]mero|l[ií]nea)\b",
+        r"\bcambiar(me)?\s+de\s+operador\b",
+        r"\bmigrar\s+a\s+otra\s+(compa[ñn][ií]a|operadora)\b",
+    ],
+    "NUEVA_LINEA": [
+        r"\babrir\s+(otra|una|otra\s+m[aá]s|nueva)?\s*l[ií]nea\b",
+        r"\b(adquirir|contratar|sacar|activar)\s+(otra|una)?\s*l[ií]nea\s+(nueva|adicional)?\b",
+        r"\bl[ií]nea\s+(nueva|adicional)\b",
+        r"\bnuevo\s+plan\s+adicional\b",
+        r"\bcontratar\s+(un\s+)?nuevo\s+servicio\b",
+        r"\bagregar\s+una\s+l[ií]nea\b",
+    ],
+}
+
+PATRONES_SENSIBLES = frozenset(_SOLICITUD_SENSIBLE_PATRONES.keys())
+
+
+def detectar_solicitud_sensible(message: str) -> Optional[str]:
+    texto = message.lower()
+    for patron, patrones_regex in _SOLICITUD_SENSIBLE_PATRONES.items():
+        if any(re.search(p, texto) for p in patrones_regex):
+            return patron
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Solicitud explícita de agente humano
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Solicitud explícita y palabras clave exactas de escalamiento directo
+# ---------------------------------------------------------------------------
+_EXACT_ESCALATION_REGEX = re.compile(
+    r"^(0|asesor|asesora|humano|humana|agente|operador|operadora|ayuda|hablar con alguien|persona real|atencion humana)$",
+    re.IGNORECASE
+)
+
+_CONSULTA_CASO_REGEX = re.compile(
+    r"\b(c[oó]mo\s+va\s+mi\s+caso|estado\s+(de\s+mi\s+)?caso|qu[eé]\s+pas[oó]\s+con\s+mi\s+caso|revisar\s+mi\s+caso|seguimiento\s+(de\s+)?caso|mi\s+folio|CASO-[A-Z0-9]{4,8})\b",
+    re.IGNORECASE
+)
 
 _HANDOFF_PATTERNS = [
     r"\b(asesor|agente|representante)(a|es)?\b",
@@ -66,13 +125,8 @@ _HANDOFF_PATTERNS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Pistas léxicas (SOLO una heurística de apoyo)
+# Pistas léxicas (sólo heurística de apoyo)
 # ---------------------------------------------------------------------------
-# Esta lista no pretende ser exhaustiva ni autoritativa: el LLM es quien decide
-# el perfil léxico. Sirve para dos casos concretos donde no hay llamada al modelo:
-#   1. El camino rápido de facturación.
-#   2. El modo degradado sin LLM.
-
 _JERGA_MARKERS = [
     r"\b(pe|pue|causa|compadre|choch(era|o)|manyas?|chibol[oa]|flaco)\b",
     r"\b(bravazo|paja|chevere|ch[eé]vere|yapa|al toque|chamba|luca|plata)\b",
@@ -87,8 +141,6 @@ _FORMAL_MARKERS = [
     r"\b(buenos d[ií]as|buenas tardes|buenas noches)\b",
 ]
 
-# Mensaje único de modo degradado (sin LLM disponible).
-# No es un catálogo de respuestas: es el salvavidas para que el servicio no caiga.
 _FALLBACK_CONVERSACIONAL = (
     "¡Hola! Soy Lucía y te ayudo con todo lo relacionado a tu recibo y tu plan. "
     "¿Qué te gustaría revisar?"
@@ -97,11 +149,11 @@ _FALLBACK_CONVERSACIONAL = (
 
 @dataclass
 class RoutingDecision:
-    """Resultado del enrutamiento de un turno."""
-    intent: str                      # FACTURACION | SOLICITUD_AGENTE | SALUDO | DESPEDIDA | AGRADECIMIENTO | FUERA_DE_DOMINIO
-    perfil_lexico: str               # FORMAL | CASUAL | USO_JERGAS
-    respuesta: Optional[str] = None  # Texto ya redactado (solo turnos no-facturación)
-    fuente: str = "DETERMINISTA"     # LLM | DETERMINISTA — para observabilidad
+    intent: str
+    perfil_lexico: str
+    respuesta: Optional[str] = None
+    fuente: str = "DETERMINISTA"
+    patron_sensible: Optional[str] = None
 
     @property
     def es_facturacion(self) -> bool:
@@ -111,32 +163,37 @@ class RoutingDecision:
     def es_solicitud_agente(self) -> bool:
         return self.intent == "SOLICITUD_AGENTE"
 
+    @property
+    def es_solicitud_sensible(self) -> bool:
+        return self.intent == "SOLICITUD_SENSIBLE"
+
+    @property
+    def es_consulta_caso(self) -> bool:
+        return self.intent == "CONSULTA_ESTADO_CASO"
+
 
 def has_billing_signals(message: str) -> bool:
-    """¿El mensaje contiene vocabulario inequívoco de facturación?"""
     texto = message.lower()
     return any(re.search(p, texto) for p in _BILLING_PATTERNS)
 
 
 def has_handoff_signals(message: str) -> bool:
-    """¿El usuario está pidiendo explícitamente hablar con un agente humano?"""
-    texto = message.lower()
+    texto = message.lower().strip()
+    if _EXACT_ESCALATION_REGEX.match(texto):
+        return True
     return any(re.search(p, texto) for p in _HANDOFF_PATTERNS)
 
 
-def detectar_perfil_lexico_heuristico(message: str, perfil_previo: Optional[str] = None) -> str:
-    """
-    Estimación de registro sin llamar al modelo. Heurística de apoyo:
-    se usa en el camino rápido de facturación y en modo degradado.
-    """
-    texto = message.lower()
+def has_case_status_signals(message: str) -> bool:
+    return bool(_CONSULTA_CASO_REGEX.search(message.strip()))
 
+
+def detectar_perfil_lexico_heuristico(message: str, perfil_previo: Optional[str] = None) -> str:
+    texto = message.lower()
     if any(re.search(p, texto) for p in _JERGA_MARKERS):
         return persona.PERFIL_JERGAS
     if any(re.search(p, texto) for p in _FORMAL_MARKERS):
         return persona.PERFIL_FORMAL
-
-    # Sin señales claras: se conserva el registro ya observado en la sesión.
     if perfil_previo:
         return persona.normalizar_perfil(perfil_previo)
     return persona.PERFIL_POR_DEFECTO
@@ -148,32 +205,40 @@ def route(
     pending_emotions: Optional[List[Dict]] = None,
     historial_conversacion: Optional[List[Dict]] = None,
 ) -> RoutingDecision:
-    """
-    Decide si el turno va al pipeline de facturación o se resuelve conversacionalmente.
+    msg_clean = message.strip()
 
-    Para turnos conversacionales la respuesta ya viene redactada por el LLM, con la
-    personalidad de Lucía y adaptada al registro del usuario.
-    """
-    # 1. Máxima prioridad: solicitud explícita de agente humano.
-    #    Va antes que facturación: "pásame con un asesor sobre mi plan" no debe
-    #    quedar atrapado explicando el recibo otra vez.
-    if has_handoff_signals(message):
+    # 1. Salida de escalamiento garantizada inmediata (sin pasar por LLM)
+    if _EXACT_ESCALATION_REGEX.match(msg_clean) or has_handoff_signals(msg_clean):
         return RoutingDecision(
             intent="SOLICITUD_AGENTE",
-            perfil_lexico=detectar_perfil_lexico_heuristico(message, perfil_previo),
+            perfil_lexico=detectar_perfil_lexico_heuristico(msg_clean, perfil_previo),
             fuente="DETERMINISTA",
         )
 
-    # 2. Camino rápido: señales claras de facturación → sin llamada extra al modelo.
-    if has_billing_signals(message):
+    # 2. Consulta de estado de caso por folio o pregunta de seguimiento
+    if has_case_status_signals(msg_clean):
+        return RoutingDecision(
+            intent="CONSULTA_ESTADO_CASO",
+            perfil_lexico=detectar_perfil_lexico_heuristico(msg_clean, perfil_previo),
+            fuente="DETERMINISTA",
+        )
+
+    patron_sensible = detectar_solicitud_sensible(msg_clean)
+    if patron_sensible:
+        return RoutingDecision(
+            intent="SOLICITUD_SENSIBLE",
+            perfil_lexico=detectar_perfil_lexico_heuristico(msg_clean, perfil_previo),
+            fuente="DETERMINISTA",
+            patron_sensible=patron_sensible,
+        )
+
+    if has_billing_signals(msg_clean):
         return RoutingDecision(
             intent="FACTURACION",
-            perfil_lexico=detectar_perfil_lexico_heuristico(message, perfil_previo),
+            perfil_lexico=detectar_perfil_lexico_heuristico(msg_clean, perfil_previo),
             fuente="DETERMINISTA",
         )
 
-    # 3. Sin señales claras (o mensaje corto ambiguo): decide el LLM, que ve el
-    #    historial reciente y entiende jerga, ironía y contexto.
     resultado = llm_service.classify_and_reply(
         user_message=message,
         perfil_previo=perfil_previo,
@@ -184,12 +249,8 @@ def route(
     if resultado:
         intent = resultado["intent"]
         perfil = resultado["perfil_lexico"]
-
-        # El LLM detectó una consulta de facturación expresada sin vocabulario técnico
-        # (p. ej. jerga: "oe, mi luz salió salada este mes").
         if intent in ("FACTURACION", "SOLICITUD_AGENTE"):
             return RoutingDecision(intent=intent, perfil_lexico=perfil, fuente="LLM")
-
         respuesta = resultado.get("respuesta") or _FALLBACK_CONVERSACIONAL
         return RoutingDecision(
             intent=intent,
@@ -198,9 +259,6 @@ def route(
             fuente="LLM",
         )
 
-    # 3. Modo degradado (sin LLM). Ante la duda, tratar como facturación:
-    #    el índice de incertidumbre derivará a un humano si no hay datos suficientes,
-    #    lo cual es preferible a ignorar una consulta real.
     perfil = detectar_perfil_lexico_heuristico(message, perfil_previo)
     if _parece_social_simple(message):
         return RoutingDecision(
@@ -214,15 +272,12 @@ def route(
 
 
 def _parece_social_simple(message: str) -> bool:
-    """
-    Heurística mínima de modo degradado: mensajes muy cortos con raíces sociales
-    evidentes. Solo se usa cuando el LLM no está disponible.
-    """
     texto = message.strip().lower()
-    if len(texto.split()) > 4:
+    if len(texto.split()) > 8:
         return False
     return bool(re.search(
         r"\b(hola|hey|buenas|buenos|hi|hello|saludos|gracias|adi[oó]s|chao|chau|bye|"
-        r"hasta luego|nos vemos|ok|vale|listo)\b",
+        r"hasta luego|nos vemos|ok|vale|listo|acuerdas|recuerdas|eres|bot|ia|quien|"
+        r"quién|c[oó]mo|tal|que tal|q tal|ayuda|dime|sabes|puedes)\b",
         texto,
     ))

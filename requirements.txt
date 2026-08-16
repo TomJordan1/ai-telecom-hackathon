@@ -5,38 +5,50 @@
 # que no se usan directamente aquí).
 
 # --- API / Core ---
-fastapi==0.141.1
-uvicorn==0.52.1
-starlette==1.4.1
+fastapi
+uvicorn
+starlette
 
 # --- Validación y configuración ---
-pydantic==2.13.4
-pydantic-settings==2.14.2
-python-dotenv==1.2.2
+pydantic
+pydantic-settings
+python-dotenv
 
 # --- Base de datos ---
-SQLAlchemy==2.0.51
+SQLAlchemy
 # Driver de PostgreSQL. Necesario cuando DATABASE_URL apunta a Supabase; con
 # SQLite no se usa, pero se instala para que el mismo requirements sirva en local
 # y en producción.
-psycopg2-binary==2.9.12
+# psycopg2-binary
 
 # --- Capa RAG (Supabase + pgvector) ---
-supabase==2.13.0
+supabase
 
 # Embeddings locales para EMBEDDING_PROVIDER=local (all-MiniLM-L6-v2, 384 dims).
 # Runtime ONNX, ~80 MB, sin API externa ni costo por token.
-fastembed==0.8.0
+fastembed
 # Alternativa más pesada al anterior (~2 GB con torch). Solo si prefieres el
 # ecosistema de sentence-transformers; el proyecto detecta cuál está instalado.
-#   pip install sentence-transformers==3.4.1
+#   pip install sentence-transformers
 
 # --- LLM (DeepSeek vía interfaz compatible con OpenAI) ---
-langchain-core==1.5.3
-langchain-openai==1.4.1
+langchain-core
+langchain-openai
 
 # --- HTTP saliente (WhatsApp Cloud API, health checks) ---
-requests==2.34.2
+requests
 
 # --- Bot de Telegram (scripts/telegram_bot.py) ---
-python-telegram-bot==22.8
+python-telegram-bot
+
+# --- Procesamiento de Datos ---
+pandas
+openpyxl
+psycopg2-binary
+
+# --- Infografías (visual_1/2/3: variación, desglose, histórico del recibo) ---
+# Usado por app/services/image_renderer.py para generar las imágenes PNG que
+# se envían por WhatsApp. Se eligió Pillow (dibujo directo) en vez de un
+# navegador headless (Playwright) para no depender de descargar un binario de
+# Chromium en el servidor de despliegue.
+Pillow

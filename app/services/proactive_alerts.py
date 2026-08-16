@@ -46,15 +46,22 @@ def _enviar_alerta(db: Session, user_id: str, mensaje: str) -> Dict[str, Any]:
     return {"user_id": user_id, "estado": "enviado", "canales": canales_usados}
 
 
+MAX_USERS_PROACTIVE_SCAN = 60  # límite para barrido ágil en demostraciones
+
+
 def run_proactive_check(db: Session) -> Dict[str, Any]:
     """
-    Recorre todos los usuarios con recibos, detecta alertas próximas a vencer
-    (upcoming_alerts, ya calculado deterministamente) y envía un mensaje
-    proactivo por los canales de contacto disponibles.
-
-    Retorna un resumen apto para mostrarse en el panel de administración.
+    Recorre los usuarios con recibos, priorizando aquellos con WhatsApp/Telegram
+    vinculado, detecta alertas próximas a vencer y envía los mensajes proactivos.
     """
-    user_ids = crud.get_all_user_ids(db)
+    # 1. Obtener primero los usuarios con WhatsApp registrado
+    contactos_con_wa = [c.user_id for c in crud.get_all_contactos(db) if c.whatsapp_number]
+    
+    # 2. Completar con otros usuarios hasta el límite
+    todos_los_ids = crud.get_all_user_ids(db)
+    otros_ids = [uid for uid in todos_los_ids if uid not in contactos_con_wa][:MAX_USERS_PROACTIVE_SCAN]
+    
+    user_ids = contactos_con_wa + otros_ids
     resultados: List[Dict[str, Any]] = []
 
     for user_id in user_ids:
@@ -64,9 +71,23 @@ def run_proactive_check(db: Session) -> Dict[str, Any]:
         if not alertas:
             continue
 
+
+        contacto = crud.get_contacto_usuario(db, user_id)
+        historial = crud.get_historial_reciente_usuario(
+            db, user_id=user_id, whatsapp_number=contacto.whatsapp_number if contacto else None
+        )
+
         for alerta in alertas:
-            mensaje = generate_proactive_alert_message(alerta)
+            mensaje = generate_proactive_alert_message(alerta, historial_conversacion=historial)
             envio = _enviar_alerta(db, user_id, mensaje)
+
+
+            # Si no hay canal externo disponible (testing local), registramos
+            # igualmente la alerta con canal "panel" para hacerla visible en el admin.
+            if envio.get("estado") == "sin_canal_de_contacto":
+                envio["estado"] = "panel"
+                envio["canales"] = ["panel"]
+
             resultados.append({
                 **envio,
                 "alerta": alerta,

@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "sqlite:///./lucia_brain.db"
 
+    # Cuenta financiera (FINANCIAL_ACCOUNT del dataset real) que se usa cuando
+    # un canal externo no logra identificar al cliente: por ejemplo, un número
+    # de WhatsApp que no está registrado en contactos_usuario. Si se deja vacío,
+    # el sistema resuelve una cuenta con historial desde la propia base, así que
+    # la demo nunca depende de un identificador escrito a mano en el código.
+    DEMO_ACCOUNT_ID: str | None = None
+
     # --- Capa RAG (Supabase + pgvector) ---
     SUPABASE_URL: str | None = None
     SUPABASE_KEY: str | None = None

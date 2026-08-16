@@ -13,10 +13,16 @@ if ES_SQLITE:
         settings.DATABASE_URL, connect_args={"check_same_thread": False}
     )
 else:
+    # SQLAlchemy 2.0 dropped support for the deprecated 'postgres://' scheme
+    # but many providers like Render/Heroku/Supabase still inject it via env vars.
+    db_url = settings.DATABASE_URL
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+
     # pool_pre_ping evita usar conexiones que el pooler de Supabase ya cerró
     # por inactividad, algo habitual en instancias que se duermen (Render free).
     engine = create_engine(
-        settings.DATABASE_URL,
+        db_url,
         pool_pre_ping=True,
         pool_recycle=300,
     )
@@ -42,7 +48,9 @@ def run_lightweight_migrations():
     Postgres exige FALSE y un cast explícito.
     """
     # Literales de DEFAULT dependientes del motor.
-    default_json = "'[]'" if ES_SQLITE else "'[]'::json"
+    # En Postgres, un string literal válido como JSON se convierte automáticamente,
+    # no hace falta el cast ::json explícito que a veces falla en ALTER TABLE.
+    default_json = "'[]'"
     default_false = "0" if ES_SQLITE else "FALSE"
 
     inspector = inspect(engine)
@@ -70,6 +78,10 @@ def run_lightweight_migrations():
         _agregar_columna(
             "historial_interacciones", "handed_off_at", "TIMESTAMP NULL" if ES_SQLITE else "TIMESTAMP WITHOUT TIME ZONE NULL"
         )
+    if "en_atencion_humana" not in columnas:
+        _agregar_columna(
+            "historial_interacciones", "en_atencion_humana", f"BOOLEAN DEFAULT {default_false}"
+        )
 
     if "audit_log" in inspector.get_table_names():
         columnas_audit = {c["name"] for c in inspector.get_columns("audit_log")}
@@ -77,3 +89,8 @@ def run_lightweight_migrations():
             _agregar_columna("audit_log", "handoff_context", "JSON")
         if "atendido" not in columnas_audit:
             _agregar_columna("audit_log", "atendido", f"BOOLEAN DEFAULT {default_false}")
+
+    if "cuarentena_casos" in inspector.get_table_names():
+        columnas_cuarentena = {c["name"] for c in inspector.get_columns("cuarentena_casos")}
+        if "folio" not in columnas_cuarentena:
+            _agregar_columna("cuarentena_casos", "folio", "VARCHAR(30)")

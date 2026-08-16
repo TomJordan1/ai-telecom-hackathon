@@ -9,22 +9,27 @@ def register_new_case(
     session_id: str,
     fact_payload: dict,
     solucion_propuesta: dict,
-    uncertainty_score: float
-) -> str:
+    uncertainty_score: float,
+    folio: str = None,
+) -> tuple:
     """
     Registra un caso nuevo en cuarentena cuando el sistema no encontró
     un patrón conocido o la incertidumbre es alta.
-    Retorna el ID del caso registrado.
+    Retorna (caso_id, folio).
     """
+    if not folio:
+        folio = crud.generar_folio()
+
     caso = crud.create_caso_cuarentena(db, {
         "session_id": session_id,
+        "folio": folio,
         "patron_detectado": fact_payload.get("detected_event", "DESCONOCIDO"),
         "evidencias": fact_payload,
         "solucion_propuesta": solucion_propuesta,
         "fecha_followup": datetime.utcnow() + timedelta(days=FOLLOWUP_DAYS),
         "incertidumbre_score": uncertainty_score
     })
-    return caso.id
+    return caso.id, caso.folio
 
 def register_feedback(db: Session, caso_id: str, tipo: str, es_posterior: bool = False):
     """

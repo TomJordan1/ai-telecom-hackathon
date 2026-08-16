@@ -20,19 +20,104 @@ class MessageChunk(BaseModel):
 class BillSummary(BaseModel):
     month: str
     amount: float
+    ciclo: Optional[str] = Field(
+        None, description="Ciclo de facturación real (YYYYMMDD) del que proviene el monto"
+    )
     change_reason: Optional[str] = None
+
+
+class ChargeBreakdownItem(BaseModel):
+    """
+    Una línea del desglose del recibo por categoría de cargo. Responde a la
+    pregunta '¿qué me están cobrando?' sin exponer los códigos internos de
+    facturación: `etiqueta` ya viene en lenguaje cliente y `conceptos` cita las
+    descripciones reales de los cargos que componen el monto.
+    """
+    categoria: str
+    etiqueta: str
+    monto: float
+    conceptos: List[str] = []
+
+
+class AuditorItem(BaseModel):
+    """
+    Fila del Modo Auditor con trazabilidad al código de facturación original (CSV).
+    """
+    codigo_cargo: str
+    concepto: str
+    categoria: str
+    monto_anterior: float = 0.0
+    monto_actual: float = 0.0
+    impacto: float = 0.0
+
+
+class AuditorEquation(BaseModel):
+    """
+    Ecuación algebraica exacta: Monto Anterior + Σ Impactos = Monto Actual.
+    Demuestra la conciliación matemática al céntimo.
+    """
+    monto_anterior: float
+    monto_actual: float
+    suma_impactos: float
+    conciliado: bool
+    diferencia_centimos: float = 0.0
+    desglose: List[AuditorItem] = []
+
+
+class VariationBreakdownItem(BaseModel):
+    """
+    Aporte de una categoría a la variación entre el recibo actual y el previo.
+    La suma de los `impacto` de todos los ítems reproduce exactamente la
+    variación total, así que la explicación queda respaldada al céntimo.
+    """
+    categoria: str
+    etiqueta: str
+    monto_actual: float
+    monto_anterior: float
+    impacto: float
+    conceptos: List[str] = []
+    codigos_cargo: List[str] = []
+
+
+class BillingAdjustments(BaseModel):
+    """Notas de crédito y débito emitidas en el ciclo consultado."""
+    cantidad: int = 0
+    total_notas_credito: float = 0.0
+    total_notas_debito: float = 0.0
 
 class UpcomingAlert(BaseModel):
     concepto: str
     fecha_fin: str
     impacto_estimado: str
     tipo: str
-    dias_restantes: int
+    # El dataset declara la duración del beneficio en meses (dentro de la
+    # descripción del cargo), no una fecha de corte exacta. Por eso el aviso se
+    # expresa en ciclos facturados frente a la duración pactada, y `dias_restantes`
+    # queda como opcional: se informa solo si existe una fecha real de corte.
+    dias_restantes: Optional[int] = None
+    duracion_pactada_meses: Optional[int] = None
+    ciclos_facturados: Optional[int] = None
 
 class RecommendedPlan(BaseModel):
     nombre: str
     precio: float
     beneficios: str
+    motivo: Optional[str] = Field(
+        None,
+        description="Criterio verificable por el que se considera una mejora: "
+                    "MAS_CAPACIDAD (más GB por igual o menor tarifa) o "
+                    "MENOR_TARIFA (misma modalidad de renta a menor precio).",
+    )
+
+class NextBestAction(BaseModel):
+    """
+    Siguiente mejor acción recomendada (Next Best Action) para guiar la autogestión
+    del cliente (pagar recibo, ver desglose, derivar a asesor, explorar planes, etc.).
+    """
+    id: str = Field(..., description="PAY_BILL, VIEW_BREAKDOWN, HANDOFF_AGENT, EXPLORE_PLANS, REGISTER_RESOLVED, VINCULAR_CUENTA")
+    titulo: str = Field(..., description="Texto visible en el botón de acción rápida (ej: '💳 Pagar recibo', '📊 Ver desglose')")
+    tipo: str = Field(..., description="Categoría de la acción: pago, consulta, derivacion, comercial")
+    payload: Optional[Any] = None
 
 class PlanOptimizerSuggestion(BaseModel):
     available: bool = False
@@ -45,20 +130,37 @@ class PersonalityMetadata(BaseModel):
 
 class ChatResponse(BaseModel):
     session_id: str
-    intent_category: str
+    intent_category: str = "CONSULTA_GENERAL"
     requires_human_intervention: bool = False
-    sentiment_score: int = Field(..., ge=1, le=5)
-    messages: List[MessageChunk]
+    sentiment_score: int = Field(3, ge=1, le=5)
+    messages: List[MessageChunk] = []
     historical_bills_summary: List[BillSummary] = []
+    # Desgloses deterministas: los rellena el orquestador a partir del payload
+    # verificado, nunca el LLM. Permiten a la App mostrar el detalle del recibo
+    # y el porqué de la variación sin volver a consultar el backend.
+    current_bill_breakdown: List[ChargeBreakdownItem] = []
+    variation_breakdown: List[VariationBreakdownItem] = []
+    auditor_breakdown: Optional[AuditorEquation] = None
+    billing_adjustments: Optional[BillingAdjustments] = None
     upcoming_alerts: List[UpcomingAlert] = []
     plan_optimizer_suggestion: PlanOptimizerSuggestion = PlanOptimizerSuggestion()
+    next_best_actions: List[NextBestAction] = []
     personality_metadata: PersonalityMetadata = PersonalityMetadata()
     handoff_context: Optional[Any] = None
     confidence_score: int = Field(99, ge=0, le=100)
+    confidence_reasons: List[str] = Field(
+        default_factory=list,
+        description="Razones explícitas y verificables que sustentan el nivel de confianza."
+    )
     caso_validado: bool = Field(
         False,
-        description="True si la respuesta reutilizó una solución ya validada en base_casos, "
-                    "en vez de generarse desde cero. Es la señal visible del ciclo de aprendizaje."
+        description="True si la respuesta reutilizó una solución ya validada por asesores en base_casos, "
+                    "en vez de generarse desde cero. Es la señal visible del banco de conocimiento."
     )
     compliance_triggered: bool = False
+    en_atencion_humana: bool = False
+    folio: Optional[str] = Field(
+        None,
+        description="Folio corto único (ej: CASO-8F3A) generado cuando el caso entra en cuarentena o se deriva a asesor."
+    )
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")

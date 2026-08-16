@@ -67,10 +67,8 @@ async function loadHandoffQueue() {
         list.innerHTML = data.casos.map(renderHandoffCard).join("");
 
         list.querySelectorAll("[data-atender]").forEach((btn) => {
-            btn.addEventListener("click", async () => {
-                await apiPost(`/admin/handoff-queue/${btn.dataset.atender}/atender`);
-                showToast("Caso marcado como atendido");
-                loadHandoffQueue();
+            btn.addEventListener("click", () => {
+                openChatModal(btn.dataset.session);
             });
         });
     } catch (e) {
@@ -81,9 +79,15 @@ async function loadHandoffQueue() {
 function renderHandoffCard(caso) {
     const ctx = caso.handoff_context || {};
     const emociones = (ctx.comentarios_emocionales_pendientes || []).join("; ") || "Ninguno";
+    const canalIconos = { "CHAT": "💬 Chat Web", "LLAMADA": "📞 Llamada Telefónica", "WHATSAPP": "📲 WhatsApp" };
+    const canalPreferido = canalIconos[ctx.canal_preferido] || ctx.canal_preferido || "💬 Chat Web";
+    const reasons = (ctx.confidence_reasons || []).map(r => `• ${r}`).join("\n") || "• Consulta en evaluación por asesor";
+    const auditTrail = (ctx.audit_trail_components || []).join(" ➔ ") || "deterministic_engine";
+
     const evidencia = ctx.evidencia_determinista
-        ? `Evento: ${ctx.evidencia_determinista.detected_event || "—"} | Variación: S/ ${ctx.evidencia_determinista.variation_amount ?? "—"}`
+        ? `Evento: ${ctx.evidencia_determinista.detected_event || "—"} | Recibo: S/ ${ctx.evidencia_determinista.current_bill_amount ?? "—"} | Variación: S/ ${ctx.evidencia_determinista.variation_amount ?? "—"}`
         : "Sin evidencia de facturación asociada.";
+
     const historial = (ctx.historial_reciente || [])
         .map((t) => `${t.role === "user" ? "Usuario" : "Lucía"}: ${t.text}`)
         .join("\n") || "Sin turnos previos registrados.";
@@ -95,26 +99,111 @@ function renderHandoffCard(caso) {
                 <div class="card-title">Sesión: ${caso.session_id}</div>
                 <div class="card-subtitle">${caso.intent_category} · ${fmtFecha(caso.fecha)}</div>
             </div>
-            <span class="badge ${caso.atendido ? "badge-done" : "badge-pending"}">
-                ${caso.atendido ? "Atendido" : "Pendiente"}
-            </span>
+            <div style="display:flex;gap:6px;align-items:center;">
+                <span class="badge badge-done" style="background:#e0e7ff;color:#3730a3;border:1px solid #c7d2fe;">${canalPreferido}</span>
+                <span class="badge ${caso.atendido ? "badge-done" : "badge-pending"}">
+                    ${caso.atendido ? "Atendido" : "Pendiente"}
+                </span>
+            </div>
         </div>
         <div class="card-details">
-Motivo: ${ctx.motivo || "—"}
-Usuario: ${ctx.user_id || "—"}
-Último mensaje: "${ctx.ultimo_mensaje || "—"}"
-Sentimiento: ${ctx.sentimiento_score ?? "—"}/5  ·  Perfil: ${ctx.perfil_lexico || "—"}
-${evidencia}
-Comentarios emocionales pendientes: ${emociones}
+<strong>Canal de contacto solicitado:</strong> ${canalPreferido}
+<strong>Garantía al cliente:</strong> ✓ Se confirmó al cliente que no tendrá que repetir su caso.
+<strong>Motivo de derivación:</strong> ${ctx.motivo || "—"}
+<strong>Usuario:</strong> ${ctx.user_id || "—"}
+<strong>Último mensaje:</strong> "${ctx.ultimo_mensaje || "—"}"
+<strong>Sentimiento:</strong> ${ctx.sentimiento_score ?? "—"}/5  ·  <strong>Perfil:</strong> ${ctx.perfil_lexico || "—"}
+<strong>Facturación:</strong> ${evidencia}
+<strong>Trazabilidad de Componentes:</strong> ${auditTrail}
 
-Historial reciente:
+<strong>Fundamentos de Incertidumbre y Certeza:</strong>
+${reasons}
+
+<strong>Historial reciente verificado:</strong>
 ${historial}
         </div>
-        ${!caso.atendido ? `<div class="card-actions"><button class="btn-attend" data-atender="${caso.id}">✓ Marcar como atendido</button></div>` : ""}
+        ${!caso.atendido ? `<div class="card-actions"><button class="btn-attend" data-atender="${caso.id}" data-session="${caso.session_id}">💬 Abrir Chat</button></div>` : ""}
     </div>`;
 }
 
 document.getElementById("filtro-pendientes").addEventListener("change", loadHandoffQueue);
+
+// --- Lógica del Modal de Chat (Handoff) ---
+let currentChatSessionId = null;
+let chatRefreshInterval = null;
+
+async function openChatModal(sessionId) {
+    currentChatSessionId = sessionId;
+    document.getElementById("chat-session-id").textContent = sessionId;
+    document.getElementById("chat-modal").style.display = "flex";
+    await loadChatHistory();
+    chatRefreshInterval = setInterval(loadChatHistory, 3000); // Auto-refresh cada 3s
+}
+
+async function loadChatHistory() {
+    if (!currentChatSessionId) return;
+    const historyDiv = document.getElementById("chat-history");
+    try {
+        const data = await apiGet(`/admin/handoff/${currentChatSessionId}/historial?t=${Date.now()}`);
+        historyDiv.innerHTML = "";
+        const conv = data.historial_conversacion || [];
+        conv.forEach(t => {
+            const bubble = document.createElement("div");
+            bubble.className = `chat-bubble ${t.role}`;
+            if(t.role === "lucia" && t.intent === "AGENTE_HUMANO") bubble.className = "chat-bubble agent";
+            bubble.textContent = t.text;
+            historyDiv.appendChild(bubble);
+        });
+        historyDiv.scrollTop = historyDiv.scrollHeight;
+    } catch (e) {
+        if (!historyDiv.innerHTML) historyDiv.innerHTML = `<p>Error: ${e.message}</p>`;
+    }
+}
+
+document.getElementById("btn-close-chat").addEventListener("click", () => {
+    document.getElementById("chat-modal").style.display = "none";
+    currentChatSessionId = null;
+    if(chatRefreshInterval) clearInterval(chatRefreshInterval);
+});
+
+document.getElementById("btn-send-chat").addEventListener("click", async () => {
+    const input = document.getElementById("chat-input");
+    const text = input.value.trim();
+    if (!text || !currentChatSessionId) return;
+    input.value = "";
+    
+    const historyDiv = document.getElementById("chat-history");
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble agent";
+    bubble.textContent = text;
+    historyDiv.appendChild(bubble);
+    historyDiv.scrollTop = historyDiv.scrollHeight;
+
+    try {
+        await apiPost(`/admin/handoff/${currentChatSessionId}/reply`, { message: text });
+    } catch(e) {
+        showToast(`Error: ${e.message}`);
+    }
+});
+
+document.getElementById("chat-input").addEventListener("keypress", (e) => {
+    if (e.key === "Enter") document.getElementById("btn-send-chat").click();
+});
+
+document.getElementById("btn-resolve-chat").addEventListener("click", async () => {
+    if (!currentChatSessionId) return;
+    if (!confirm("¿Seguro que el caso está resuelto? El bot volverá a responder a partir del próximo mensaje.")) return;
+    try {
+        await apiPost(`/admin/handoff/${currentChatSessionId}/resolve`);
+        showToast("Caso cerrado y control devuelto a Lucía.");
+        document.getElementById("chat-modal").style.display = "none";
+        currentChatSessionId = null;
+        if(chatRefreshInterval) clearInterval(chatRefreshInterval);
+        loadHandoffQueue();
+    } catch(e) {
+        showToast(`Error: ${e.message}`);
+    }
+});
 
 // ---------------------------------------------------------------------------
 // Cuarentena de casos
@@ -134,7 +223,13 @@ async function loadCuarentena() {
 
         list.querySelectorAll("[data-validar]").forEach((btn) => {
             btn.addEventListener("click", async () => {
-                await apiPost(`/admin/validar/${btn.dataset.validar}`, { validado_por: "AGENTE_MOVISTAR" });
+                const casoId = btn.dataset.validar;
+                const textarea = document.getElementById(`solucion-${casoId}`);
+                const solucionEditada = textarea ? textarea.value.trim() : null;
+                await apiPost(`/admin/validar/${casoId}`, {
+                    validado_por: "AGENTE_MOVISTAR",
+                    solucion_editada: solucionEditada || null,
+                });
                 showToast("Caso promovido a la base de conocimiento");
                 loadCuarentena();
             });
@@ -145,6 +240,21 @@ async function loadCuarentena() {
 }
 
 function renderCuarentenaCard(caso) {
+    // Extraer texto visible de la solución propuesta
+    let solucionTexto = "";
+    if (caso.solucion_propuesta) {
+        if (typeof caso.solucion_propuesta === "string") {
+            solucionTexto = caso.solucion_propuesta;
+        } else if (caso.solucion_propuesta.texto) {
+            solucionTexto = caso.solucion_propuesta.texto;
+        } else if (caso.solucion_propuesta.messages) {
+            solucionTexto = caso.solucion_propuesta.messages.map(m => m.text).join("\n");
+        }
+    }
+
+    // Extraer el mensaje original del usuario (para saber qué preguntó)
+    const userMessage = (caso.evidencias && caso.evidencias.user_message) || "";
+
     return `
     <div class="card">
         <div class="card-title-row">
@@ -154,9 +264,14 @@ function renderCuarentenaCard(caso) {
             </div>
             <span class="badge badge-neutral">Incertidumbre: ${(caso.incertidumbre * 100).toFixed(0)}%</span>
         </div>
+        ${userMessage ? `<div class="card-user-message">💬 "${userMessage}"</div>` : ""}
         <div class="stat-row">
             <span>Feedback inmediato: <strong>${caso.feedback_inmediato}</strong></span>
             <span>Feedback posterior: <strong>${caso.feedback_posterior}</strong></span>
+        </div>
+        <div class="card-solution">
+            <label class="solution-label">Solución propuesta (editable):</label>
+            <textarea class="solution-textarea" id="solucion-${caso.id}" rows="4">${solucionTexto}</textarea>
         </div>
         <div class="card-actions">
             <button class="btn-approve" data-validar="${caso.id}">✓ Validar y promover</button>
@@ -178,19 +293,38 @@ async function loadBaseCasos() {
             list.innerHTML = "<p class='empty-state'>Todavía no hay casos validados.</p>";
             return;
         }
-        list.innerHTML = data.casos.map((c) => `
-        <div class="card">
-            <div class="card-title-row">
-                <div>
-                    <div class="card-title">${c.patron}</div>
-                    <div class="card-subtitle">Validado por ${c.validado_por} · ${fmtFecha(c.fecha_validacion)}</div>
+        list.innerHTML = data.casos.map((c) => {
+            // Extraer texto de la solución
+            let solucionTexto = "";
+            if (c.solucion) {
+                if (typeof c.solucion === "string") {
+                    solucionTexto = c.solucion;
+                } else if (c.solucion.texto) {
+                    solucionTexto = c.solucion.texto;
+                } else if (c.solucion.messages) {
+                    solucionTexto = c.solucion.messages.map(m => m.text).join(" ");
+                }
+            }
+            // Extraer contexto del caso (user_id, último mensaje, evento)
+            const ctx = c.condiciones || {};
+            const userId = ctx.user_id || ctx.origen || "";
+            const evento = ctx.detected_event || c.patron;
+
+            return `
+            <div class="card">
+                <div class="card-title-row">
+                    <div>
+                        <div class="card-title">${c.patron}</div>
+                        <div class="card-subtitle">Validado por ${c.validado_por} · ${fmtFecha(c.fecha_validacion)}${userId ? ` · Usuario: ${userId}` : ""}</div>
+                    </div>
+                    <span class="badge badge-done">${c.veces_aplicado} usos</span>
                 </div>
-                <span class="badge badge-done">${c.veces_aplicado} usos</span>
-            </div>
-            <div class="stat-row">
-                <span>Tasa de éxito: <strong>${(c.tasa_exito * 100).toFixed(0)}%</strong></span>
-            </div>
-        </div>`).join("");
+                ${solucionTexto ? `<div class="card-details" style="margin-top:8px;white-space:pre-wrap;font-size:0.83rem">${solucionTexto}</div>` : ""}
+                <div class="stat-row">
+                    <span>Tasa de éxito: <strong>${(c.tasa_exito * 100).toFixed(0)}%</strong></span>
+                </div>
+            </div>`;
+        }).join("");
     } catch (e) {
         list.innerHTML = `<p class="empty-state">Error al cargar: ${e.message}</p>`;
     }
@@ -233,10 +367,180 @@ document.getElementById("run-proactive").addEventListener("click", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Mapeo de WhatsApp & Notificaciones
+// ---------------------------------------------------------------------------
+
+async function loadCuentasConAlertas() {
+    const select = document.getElementById("select-cuenta-alerta");
+    if (!select) return;
+
+    try {
+        const data = await apiGet("/admin/cuentas-con-alertas");
+        if (!data.cuentas || !data.cuentas.length) {
+            select.innerHTML = "<option value=''>No se encontraron cuentas con alertas activas</option>";
+            return;
+        }
+
+        select.innerHTML = "<option value=''>-- Selecciona una cuenta con Fin de Promoción --</option>" +
+            data.cuentas.map(c => {
+                const alerta = c.alertas[0] || {};
+                const promo = alerta.concepto || "Descuento por vencer";
+                const impacto = alerta.impacto_estimado || "";
+                return `<option value="${c.user_id}">Cuenta ${c.user_id} (${c.plan_actual}) · ${promo} [${impacto}]</option>`;
+            }).join("");
+    } catch (e) {
+        select.innerHTML = `<option value=''>Error al cargar cuentas: ${e.message}</option>`;
+    }
+}
+
+document.getElementById("select-cuenta-alerta").addEventListener("change", (e) => {
+    const val = e.target.value;
+    if (val) {
+        document.getElementById("input-wa-account").value = val;
+    }
+});
+
+async function loadContactos() {
+    const list = document.getElementById("contactos-list");
+    if (!list) return;
+    list.innerHTML = "<p class='empty-state'>Cargando contactos...</p>";
+
+    try {
+        const data = await apiGet("/admin/contactos");
+        if (!data.contactos || !data.contactos.length) {
+            list.innerHTML = "<p class='empty-state'>No hay números de WhatsApp vinculados aún. Usa el formulario de arriba para vincular tu número.</p>";
+            return;
+        }
+
+        list.innerHTML = data.contactos.map(c => {
+            const alertasStr = c.alertas && c.alertas.length
+                ? c.alertas.map(a => `⚠️ ${a.concepto} (${a.impacto_estimado})`).join("<br>")
+                : "Sin alertas de vencimiento pendientes";
+
+            return `
+            <div class="card">
+                <div class="card-title-row">
+                    <div>
+                        <div class="card-title">📱 WhatsApp: <strong>+${c.whatsapp_number || "Sin número"}</strong></div>
+                        <div class="card-subtitle">Cuenta Financiera: <strong>${c.user_id}</strong> · Plan: ${c.plan_actual} · Último Recibo: S/ ${c.monto_ultimo_recibo?.toFixed(2) || "0.00"}</div>
+                    </div>
+                    <span class="badge ${c.total_alertas_activas > 0 ? "badge-pending" : "badge-done"}">
+                        ${c.total_alertas_activas > 0 ? `${c.total_alertas_activas} alerta(s) activa(s)` : "Al día"}
+                    </span>
+                </div>
+                <div class="card-details" style="font-size: 0.84rem;">
+                    ${alertasStr}
+                </div>
+                <div class="card-actions">
+                    <button class="btn-primary" style="background:#059669;" data-send-alert="${c.user_id}" data-phone="${c.whatsapp_number}">
+                        🚀 Enviar Alerta Proactiva
+                    </button>
+                    <button class="btn-secondary" style="color:var(--danger); border-color:#fca5a5;" data-delete-contact="${c.user_id}">
+                        🗑️ Desvincular
+                    </button>
+                </div>
+            </div>`;
+        }).join("");
+
+        // Event listeners para botones de acción
+        list.querySelectorAll("[data-send-alert]").forEach(btn => {
+            btn.addEventListener("click", async () => {
+                const userId = btn.dataset.sendAlert;
+                const phone = btn.dataset.phone;
+                btn.disabled = true;
+                btn.textContent = "Enviando...";
+                try {
+                    const res = await apiPost("/admin/enviar-alerta-manual", {
+                        user_id: userId,
+                        whatsapp_number: phone
+                    });
+                    showToast(`Alerta enviada a +${phone}!`);
+                } catch (e) {
+                    showToast(`Error al enviar: ${e.message}`);
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = "🚀 Enviar Alerta Proactiva";
+                }
+            });
+        });
+
+        list.querySelectorAll("[data-delete-contact]").forEach(btn => {
+            btn.addEventListener("click", async () => {
+                const userId = btn.dataset.deleteContact;
+                if (confirm(`¿Desvincular la cuenta ${userId}?`)) {
+                    const res = await fetch(`${API}/admin/contactos/${userId}`, { method: "DELETE" });
+                    if (res.ok) {
+                        showToast("Contacto desvinculado");
+                        loadContactos();
+                    } else {
+                        showToast("Error al desvincular");
+                    }
+                }
+            });
+        });
+
+    } catch (e) {
+        list.innerHTML = `<p class="empty-state">Error al cargar: ${e.message}</p>`;
+    }
+}
+
+// Botón Vincular WhatsApp
+document.getElementById("btn-vincular-wa").addEventListener("click", async () => {
+    const phone = document.getElementById("input-wa-number").value.trim();
+    const account = document.getElementById("input-wa-account").value.trim();
+
+    if (!phone || !account) {
+        alert("Por favor ingresa tanto tu número de WhatsApp como la cuenta financiera.");
+        return;
+    }
+
+    try {
+        const res = await apiPost("/admin/contactos", {
+            user_id: account,
+            whatsapp_number: phone
+        });
+        showToast(`✅ Cuenta ${account} vinculada a +${phone}`);
+        loadContactos();
+    } catch (e) {
+        alert(`Error al vincular: ${e.message}`);
+    }
+});
+
+// Botón Enviar Alerta de Prueba / Proactiva directa
+document.getElementById("btn-enviar-test-wa").addEventListener("click", async () => {
+    const phone = document.getElementById("input-wa-number").value.trim();
+    const account = document.getElementById("input-wa-account").value.trim();
+    const btn = document.getElementById("btn-enviar-test-wa");
+
+    if (!phone) {
+        alert("Por favor ingresa tu número de WhatsApp destino.");
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = "Enviando a WhatsApp...";
+
+    try {
+        const res = await apiPost("/admin/enviar-alerta-manual", {
+            user_id: account || null,
+            whatsapp_number: phone
+        });
+        showToast(`🚀 Alerta enviada con éxito a +${phone}!`);
+    } catch (e) {
+        alert(`Error al enviar mensaje: ${e.message}`);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = "🚀 Enviar Alerta Proactiva a mi WhatsApp Ahora";
+    }
+});
+
+// ---------------------------------------------------------------------------
 // Carga inicial / refrescar todo
 // ---------------------------------------------------------------------------
 
 function loadAll() {
+    loadContactos();
+    loadCuentasConAlertas();
     loadHandoffQueue();
     loadCuarentena();
     loadBaseCasos();
@@ -245,3 +549,4 @@ function loadAll() {
 document.getElementById("refresh-all").addEventListener("click", loadAll);
 
 loadAll();
+
