@@ -400,8 +400,11 @@ def get_handoff_historial(session_id: str, db: Session = Depends(get_db)):
     from app.db.models import HistorialInteracciones
     historial = db.query(HistorialInteracciones).filter(HistorialInteracciones.session_id == session_id).first()
     if not historial:
-        return {"historial_conversacion": []}
-    return {"historial_conversacion": historial.historial_conversacion or []}
+        return {"historial_conversacion": [], "en_atencion_humana": False}
+    return {
+        "historial_conversacion": historial.historial_conversacion or [],
+        "en_atencion_humana": historial.en_atencion_humana
+    }
 
 
 @router.post("/admin/handoff/{session_id}/reply")
@@ -421,6 +424,7 @@ def reply_handoff(session_id: str, payload: HandoffReplyRequest, db: Session = D
 def resolve_handoff(session_id: str, db: Session = Depends(get_db)):
     from app.db import crud
     from app.db.models import AuditLog
+    from app.services.whatsapp_sender import send_whatsapp_text
     
     crud.update_historial(db, session_id, {"en_atencion_humana": False})
     
@@ -432,6 +436,10 @@ def resolve_handoff(session_id: str, db: Session = Depends(get_db)):
     
     for log in logs:
         crud.marcar_handoff_atendido(db, log.id)
+
+    if session_id.startswith("wa_"):
+        phone_number = session_id[3:]
+        send_whatsapp_text(phone_number, "🤖 Lucía ha retomado la conversación. ¿En qué más te puedo ayudar?")
         
     return {"status": "resolved"}
 

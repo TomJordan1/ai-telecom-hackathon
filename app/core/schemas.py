@@ -127,4 +127,5 @@ class ChatResponse(BaseModel):
                     "en vez de generarse desde cero. Es la señal visible del ciclo de aprendizaje."
     )
     compliance_triggered: bool = False
+    en_atencion_humana: bool = False
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
