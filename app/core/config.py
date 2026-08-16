@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     
     # LLM Settings
     DEEPSEEK_API_KEY: str | None = None
-    USE_MOCK_LLM: bool = True  # True by default since we don't have a key yet
+    USE_MOCK_LLM: bool = False  # False by default para exigir llaves en producción
 
     # Database
     DATABASE_URL: str = "sqlite:///./lucia_brain.db"
@@ -17,9 +17,8 @@ class Settings(BaseSettings):
     # --- Capa RAG (Supabase + pgvector) ---
     SUPABASE_URL: str | None = None
     SUPABASE_KEY: str | None = None
-    # True por defecto para poder desarrollar y demostrar sin credenciales:
-    # el RAG devuelve el contexto simulado en vez de fallar.
-    USE_MOCK_RAG: bool = True
+    # False por defecto para exigir conectividad a la BD vectorial.
+    USE_MOCK_RAG: bool = False
 
     # Proveedor de embeddings: "openai" (text-embedding-3-small, 1536 dims)
     # o "local" (SentenceTransformers all-MiniLM-L6-v2, 384 dims).

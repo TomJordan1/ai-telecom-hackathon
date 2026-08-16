@@ -42,6 +42,8 @@ class HistorialInteracciones(Base):
     # Bitácora acotada de turnos recientes (no todo el historial, solo lo necesario
     # para dar continuidad): [{"role": "user"|"lucia", "text": "...", "intent": "..."}]
     # Sin esto el modelo no tiene forma de saber qué ya explicó en la sesión.
+    handed_off_to_human = Column(Boolean, default=False)
+    handed_off_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

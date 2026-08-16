@@ -22,18 +22,43 @@ def validate_compliance(message: str, db: Session) -> Optional[str]:
     return None
 
 # 2. Motor Investigador (Matemáticas y Hechos Deterministas)
+#
+# El brief dimensiona el problema con "recibo actual + 5 recibos previos"
+# (lo mismo que ya muestra la App Mi Movistar, pero sin explicarlo). Se trae
+# ese mismo horizonte para poder comparar contra el mes inmediato anterior
+# (causa puntual) y también detectar patrones recurrentes en la ventana de
+# 5 meses (p. ej. "esto ya pasó 3 veces"), que es la explicación que un
+# historial de un solo mes no puede dar.
+HORIZONTE_RECIBOS = 6  # recibo actual + hasta 5 previos
+
+
 def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
     """
     Calcula variaciones (Delta M) y genera el Deterministic Fact Payload.
     """
-    recibos = crud.get_recibos_by_user(db, user_id, limit=2)
+    recibos = crud.get_recibos_by_user(db, user_id, limit=HORIZONTE_RECIBOS)
     
     if not recibos:
-        return {"error": "No hay recibos para este usuario."}
+        # El usuario no tiene recibos (es un visitante anónimo o prospecto).
+        # En lugar de romper el orquestador devolviendo un error, retornamos
+        # un payload estructurado para que se maneje como consulta general.
+        return {
+            "moneda": MONEDA_CODIGO,
+            "simbolo_moneda": MONEDA_SIMBOLO,
+            "plan_actual": None,
+            "current_bill": None,
+            "previous_bills": [],
+            "variation_amount": 0.0,
+            "variation_percentage": 0.0,
+            "detected_event": "CONSULTA_GENERAL",
+            "evidence": ["Usuario sin historial de facturación (no cliente o visitante)."],
+            "upcoming_alerts": []
+        }
     
     current_bill = recibos[0]
+    recibos_previos = recibos[1:]
     
-    if len(recibos) == 1:
+    if not recibos_previos:
         # Solo tiene un recibo, no hay historial con qué comparar.
         return {
             "moneda": MONEDA_CODIGO,
@@ -49,7 +74,7 @@ def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
             "evidence": ["Primer recibo emitido."]
         }
         
-    previous_bill = recibos[1]
+    previous_bill = recibos_previos[0]
     
     delta_m = round(current_bill.monto_total - previous_bill.monto_total, 2)
     variation_pct = round((delta_m / previous_bill.monto_total) * 100, 2) if previous_bill.monto_total > 0 else 0
@@ -85,6 +110,10 @@ def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
         detected_event = "REDUCCION_TARIFA"
         evidence.append("Reducción en los montos facturados.")
 
+    patron_recurrente = _detectar_patron_recurrente(detected_event, recibos_previos)
+    if patron_recurrente:
+        evidence.append(patron_recurrente)
+
     payload = {
         "moneda": MONEDA_CODIGO,
         "simbolo_moneda": MONEDA_SIMBOLO,
@@ -94,10 +123,8 @@ def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
             "issue_date": current_bill.mes_emision
         },
         "previous_bills": [
-            {
-                "month": previous_bill.mes_emision,
-                "amount": previous_bill.monto_total
-            }
+            {"month": r.mes_emision, "amount": r.monto_total}
+            for r in recibos_previos
         ],
         "variation_amount": delta_m,
         "variation_percentage": variation_pct,
@@ -107,6 +134,44 @@ def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
     }
     
     return payload
+
+
+def _detectar_patron_recurrente(detected_event: str, recibos_previos: List[Any]) -> Optional[str]:
+    """
+    Revisa la ventana completa de recibos previos (hasta 5 meses) para detectar
+    si el mismo tipo de variación ya ocurrió antes. Un solo mes de comparación
+    solo explica la causa puntual; esta señal explica el patrón ("esto ya pasó
+    N veces"), que es justo lo que un historial de un solo mes no puede dar.
+
+    No inventa nada: solo cuenta coincidencias de montos entre meses consecutivos
+    dentro de los datos ya cargados, exactamente como el chequeo del mes actual.
+    """
+    if detected_event in ("SIN_CAMBIOS", "NUEVO_CLIENTE", "") or len(recibos_previos) < 2:
+        return None
+
+    ocurrencias = 1  # el mes actual ya cuenta como una ocurrencia
+    for i in range(len(recibos_previos) - 1):
+        mes_a, mes_b = recibos_previos[i], recibos_previos[i + 1]
+        delta = round(mes_a.monto_total - mes_b.monto_total, 2)
+        if abs(delta) < 0.01:
+            continue
+        conceptos_a = mes_a.conceptos_facturados or {}
+        conceptos_b = mes_b.conceptos_facturados or {}
+        # Reutiliza la misma heurística de detección por tipo de concepto, aplicada
+        # par a par, para no duplicar la lógica de calculate_billing_facts.
+        if detected_event == "FIN_PROMOCION" and "descuento_promo" in conceptos_b and "descuento_promo" not in conceptos_a:
+            ocurrencias += 1
+        elif detected_event == "CUOTA_EQUIPO" and any("cuota_equipo" in str(k) for k in conceptos_a.keys()):
+            ocurrencias += 1
+        elif detected_event == "RECONEXION_MOROSIDAD" and any("reconex" in str(k) for k in conceptos_a.keys()):
+            ocurrencias += 1
+
+    if ocurrencias >= 2:
+        return (
+            f"Este mismo tipo de variación ya se registró {ocurrencias} veces "
+            f"en los últimos {len(recibos_previos)} meses."
+        )
+    return None
 
 
 def _calculate_upcoming_alerts(current_bill, dias_umbral: int = 15) -> List[Dict[str, Any]]:

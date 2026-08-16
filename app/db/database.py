@@ -62,6 +62,14 @@ def run_lightweight_migrations():
         _agregar_columna(
             "historial_interacciones", "historial_conversacion", f"JSON DEFAULT {default_json}"
         )
+    if "handed_off_to_human" not in columnas:
+        _agregar_columna(
+            "historial_interacciones", "handed_off_to_human", f"BOOLEAN DEFAULT {default_false}"
+        )
+    if "handed_off_at" not in columnas:
+        _agregar_columna(
+            "historial_interacciones", "handed_off_at", "TIMESTAMP NULL" if ES_SQLITE else "TIMESTAMP WITHOUT TIME ZONE NULL"
+        )
 
     if "audit_log" in inspector.get_table_names():
         columnas_audit = {c["name"] for c in inspector.get_columns("audit_log")}

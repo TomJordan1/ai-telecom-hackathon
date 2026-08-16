@@ -163,6 +163,33 @@ body {
     font-size: 0.85rem;
 }
 
+/* Confidence badge: hace visible el diferenciador (aprendizaje supervisado)
+   directamente en la conversación, sin necesidad de abrir el panel admin. */
+.confidence-badge {
+    margin-top: 6px;
+    align-self: flex-start;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    width: fit-content;
+}
+
+.confidence-badge.validated {
+    background: #dcfce7;
+    color: #16a34a;
+    border: 1px solid #86efac;
+}
+
+.confidence-badge.learning {
+    background: #fef3c7;
+    color: #b45309;
+    border: 1px solid #fde68a;
+}
+
 /* Upsell Card Style */
 .upsell-card {
     background: linear-gradient(135deg, #fdf4ff 0%, #fae8ff 100%);
