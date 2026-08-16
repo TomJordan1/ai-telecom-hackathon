@@ -409,7 +409,13 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     patron_en_gestion = (
         ultimo_turno_lucia.get("intent") if ultimo_turno_lucia else None
     )
-    if sesion_activa and patron_en_gestion in PATRONES_SENSIBLES and not has_billing_signals(request.message):
+    if (
+        sesion_activa
+        and patron_en_gestion in PATRONES_SENSIBLES
+        and not has_billing_signals(request.message)
+        and not has_handoff_signals(request.message)
+        and not has_case_status_signals(request.message)
+    ):
         response = ChatResponse(
             session_id=request.session_id,
             intent_category=patron_en_gestion,
