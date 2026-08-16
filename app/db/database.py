@@ -48,7 +48,9 @@ def run_lightweight_migrations():
     Postgres exige FALSE y un cast explícito.
     """
     # Literales de DEFAULT dependientes del motor.
-    default_json = "'[]'" if ES_SQLITE else "'[]'::json"
+    # En Postgres, un string literal válido como JSON se convierte automáticamente,
+    # no hace falta el cast ::json explícito que a veces falla en ALTER TABLE.
+    default_json = "'[]'"
     default_false = "0" if ES_SQLITE else "FALSE"
 
     inspector = inspect(engine)
