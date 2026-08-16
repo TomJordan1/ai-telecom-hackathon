@@ -39,7 +39,21 @@ def calculate_billing_facts(user_id: str, db: Session) -> Dict[str, Any]:
     recibos = crud.get_recibos_by_user(db, user_id, limit=HORIZONTE_RECIBOS)
     
     if not recibos:
-        return {"error": "No hay recibos para este usuario."}
+        # El usuario no tiene recibos (es un visitante anónimo o prospecto).
+        # En lugar de romper el orquestador devolviendo un error, retornamos
+        # un payload estructurado para que se maneje como consulta general.
+        return {
+            "moneda": MONEDA_CODIGO,
+            "simbolo_moneda": MONEDA_SIMBOLO,
+            "plan_actual": None,
+            "current_bill": None,
+            "previous_bills": [],
+            "variation_amount": 0.0,
+            "variation_percentage": 0.0,
+            "detected_event": "CONSULTA_GENERAL",
+            "evidence": ["Usuario sin historial de facturación (no cliente o visitante)."],
+            "upcoming_alerts": []
+        }
     
     current_bill = recibos[0]
     recibos_previos = recibos[1:]

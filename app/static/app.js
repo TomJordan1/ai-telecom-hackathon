@@ -92,7 +92,10 @@ async function sendMessage() {
     const text = messageInput.value.trim();
     if (!text) return;
 
-    const userId = userSelect.value;
+    let userId = userSelect.value;
+    if (userId === 'anonimo') {
+        userId = 'anon_' + sessionId;
+    }
     
     // UI Update
     addMessage(text, 'user');

@@ -13,12 +13,8 @@ from app.services.whatsapp_sender import process_and_send_whatsapp
 
 router = APIRouter()
 
-# Usuario de respaldo cuando el número entrante no está registrado en
-# contactos_usuario. Permite que un jurado escriba desde cualquier celular y
-# vea una demo coherente en lugar de un error.
-USER_ID_FALLBACK = "user_a_fin_promo"
-
-
+# No dependemos de un fallback fijo. Si el usuario no está registrado,
+# se creará una sesión temporal.
 def _firma_valida(cuerpo: bytes, firma_header: str | None) -> bool:
     """
     Verifica el header X-Hub-Signature-256 que Meta firma con el App Secret.
@@ -103,15 +99,15 @@ async def receive_whatsapp_message(request: Request, background_tasks: Backgroun
                         if user_text:
                             print(f"[WA WEBHOOK] Texto extraido: '{user_text}' -> procesando...")
 
-                            # El número entrante se resuelve contra contactos_usuario:
-                            # cada cliente ve sus propios recibos, no los de un mock fijo.
+                            # El número entrante se resuelve contra contactos_usuario.
+                            # Si no está, se le asigna un ID temporal y anónimo.
                             user_id = crud.get_user_id_por_whatsapp(db, phone_number)
                             if user_id:
                                 print(f"[WA WEBHOOK] Numero {phone_number} -> user_id={user_id}")
                             else:
-                                user_id = USER_ID_FALLBACK
+                                user_id = f"anon_wa_{phone_number}"
                                 print(f"[WA WEBHOOK] Numero {phone_number} no registrado en "
-                                      f"contactos_usuario, se usa fallback user_id={user_id}")
+                                      f"contactos_usuario, se usa fallback anónimo user_id={user_id}")
 
                             chat_request = ChatRequest(
                                 session_id=f"wa_{phone_number}",
