@@ -808,6 +808,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             pending_emotions=pending_emotions,
             perfil_lexico=perfil_lexico,
             historial_conversacion=historial_conversacion,
+            confidence_score=95,
         )
         response.confidence_score = 95
         response.intent_category = "CONSULTA_GENERAL_PLANES"
@@ -1075,6 +1076,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         historial_conversacion=historial_conversacion,
         recommended_plan=recommended_plan,
         pending_issue_followup=pending_issue_followup,
+        confidence_score=int((1 - uncertainty_score) * 100),
     )
 
     # Adjuntar el confidence_score (inverso de incertidumbre) y motivos verificables

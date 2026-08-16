@@ -152,7 +152,7 @@ def _generate_mock_response(
     else:
         messages.append(MessageChunk(text="Tu recibo se mantiene igual al mes anterior. ¡Todo en orden!", type="explanation"))
             
-    if "error" not in deterministic_payload:
+    if deterministic_payload.get("current_bill"):
         messages.append(MessageChunk(text=f"Recibo actual ({deterministic_payload['current_bill']['issue_date']}): S/ {deterministic_payload['current_bill']['amount']}", type="evidence", delay_ms=1500))
 
     # El plan recomendado SIEMPRE viene verificado del catálogo (recommend_plan_upgrade).
@@ -204,6 +204,7 @@ def generate_response(
     historial_conversacion: Optional[List[Dict[str, Any]]] = None,
     recommended_plan: Optional[Dict[str, Any]] = None,
     pending_issue_followup: bool = False,
+    confidence_score: int = 0,
 ) -> ChatResponse:
     """
     Simula la generación de lenguaje por el LLM o usa LangChain real con DeepSeek 
@@ -294,9 +295,13 @@ def generate_response(
         preciso a sus recibos y que puedes ayudarle).
 
         REGLA DE VERBALIZACIÓN DE CERTEZA Y LÍMITES EN LENGUAJE NATURAL:
-        En lugar de actuar como un bot que solo entrega números, verbaliza activamente tu certeza y tus límites:
-        - Si conoces con total certeza los conceptos porque coinciden con el recibo, explícalo con claridad y firmeza.
-        - Si algún dato no está disponible (ej: acuerdos contractuales de renovación o fechas exactas de corte), di honestamente qué sabes con certeza matemática y cuál es el límite.
+        El score de certeza calculado determinísticamente para esta respuesta es: {confidence_score}%.
+        Úsalo para adaptar tu lenguaje según estos rangos (no menciones el número exacto al usuario):
+        - 95-100%: habla con total seguridad. "Puedo confirmarte con certeza que...", "Los registros verificados indican que...", "Esto es exacto al céntimo:..."
+        - 75-94%: habla con confianza pero acotando. "Según los datos disponibles...", "Lo que veo en tu recibo es...", "Con la información que tengo puedo decirte que..."
+        - 50-74%: sé más cauteloso y transparente sobre los límites. "La causa más probable según los datos es...", "Aunque no puedo confirmarlo con total certeza, los registros sugieren que...", "Para una confirmación definitiva convendría que un asesor revise..."
+        - 0-49%: declara honestamente el límite. "No cuento con datos suficientes para confirmarlo con certeza matemática...", "Puedo decirte lo que veo, pero un asesor debería validarlo..."
+        Nunca menciones "score", "certeza 95%", "índice" ni ningún término técnico interno al usuario.
         
         REGLA DE TRANQUILIDAD EN DERIVACIÓN A ASESOR (CRÍTICA):
         Si la respuesta contempla derivación a un asesor o gestión humana, incluye SIEMPRE la frase tranquilizadora:
@@ -326,6 +331,7 @@ def generate_response(
                 "instruccion_perfil": persona.instruccion_registro(perfil_lexico),
                 "historial_conversacion": _formatear_historial(historial_conversacion),
                 "pending_issue_followup": "True" if pending_issue_followup else "False",
+                "confidence_score": str(confidence_score),
                 "session_id": session_id,
                 "user_message": user_message
             })
