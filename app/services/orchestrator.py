@@ -13,11 +13,16 @@ from app.services.deterministic import (
     is_case_resolved,
     recommend_plan_upgrade,
     extract_emotional_comment,
+    buscar_cargo_especifico,
 )
 from app.services.rag import retrieve_context
 from app.services.llm import generate_response
 from app.services.case_matcher import match_caso
-from app.services.uncertainty_calculator import calculate_uncertainty, requires_handoff
+from app.services.uncertainty_calculator import (
+    calculate_uncertainty,
+    calculate_uncertainty_with_reasons,
+    requires_handoff,
+)
 from app.services.feedback_handler import register_new_case
 from app.services.intent_classifier import route, PATRONES_SENSIBLES, has_billing_signals
 from app.services.next_actions import resolve_next_actions
@@ -31,8 +36,36 @@ from app.core.schemas import (
     BillSummary,
     ChargeBreakdownItem,
     VariationBreakdownItem,
+    AuditorEquation,
     BillingAdjustments,
 )
+
+
+def _detectar_loop_sin_resolver(historial_conversacion: List[Dict[str, Any]], user_message: str) -> bool:
+    """
+    Detecta si la conversación ha acumulado intentos no resueltos o ambiguos.
+    Límite duro de la industria (anti-loop) para transferir a humano con prontitud.
+    """
+    if not historial_conversacion or len(historial_conversacion) < 2:
+        return False
+
+    marcadores_duda = bool(re.search(
+        r"\b(sigo sin|no entiendo|no me queda claro|sigues sin|no respondes|otra vez|no era eso|pero por qu[eé]|por qu[eé] subi[oó]|aclarar)\b",
+        user_message,
+        re.IGNORECASE
+    ))
+
+    turnos_ambiguos = 0
+    for t in reversed(historial_conversacion[-6:]):
+        if t.get("role") == "lucia":
+            intent = t.get("intent") or ""
+            if intent in ("INCREMENTO_OTROS", "CONSULTA_GENERAL", "DERIVACION_INCERTIDUMBRE"):
+                turnos_ambiguos += 1
+
+    if turnos_ambiguos >= 2 or (turnos_ambiguos >= 1 and marcadores_duda):
+        return True
+
+    return False
 
 
 def _adjuntar_desgloses(response: ChatResponse, fact_payload: Dict[str, Any]) -> None:
@@ -50,6 +83,10 @@ def _adjuntar_desgloses(response: ChatResponse, fact_payload: Dict[str, Any]) ->
     response.variation_breakdown = [
         VariationBreakdownItem(**item) for item in (fact_payload.get("variacion_por_categoria") or [])
     ]
+
+    auditor = fact_payload.get("auditor_breakdown")
+    if auditor:
+        response.auditor_breakdown = AuditorEquation(**auditor)
 
     ajustes = fact_payload.get("ajustes_facturacion")
     response.billing_adjustments = (
@@ -410,7 +447,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         crud.add_comentario_emocional(db, request.session_id, comentario_detectado)
 
     # Solicitud estructural sensible (cancelación, portabilidad): entra al MISMO
-    # ciclo de aprendizaje supervisado que los eventos de facturación, en vez de
+    # banco de soluciones validadas por asesores que los eventos de facturación, en vez de
     # dejar que el LLM improvise un proceso no verificado.
     #
     # 1. Si ya hay una solución validada en base_casos para este patrón
@@ -627,11 +664,10 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         )
         return _finalizar(db, request, response, fact_payload)
 
-    # Paso 3.5: Case Matcher — ¿existe una solución validada para este patrón?
+    # Paso 3.5: Case Matcher — ¿existe una solución validada para este patrón o consulta?
     components_invoked.append("case_matcher")
-    caso_match = match_caso(db, fact_payload)
+    caso_match = match_caso(db, fact_payload, user_message=request.message)
     caso_id_origen = None  # Se usará para registrar feedback después
-
 
     if caso_match:
         caso_id_origen, solucion_conocida = caso_match
@@ -639,14 +675,81 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         fact_payload["solucion_conocida"] = solucion_conocida
         fact_payload["caso_id"] = caso_id_origen
 
-    # Paso 3.6: Índice de Incertidumbre Determinístico
+    # Paso 3.6: Índice de Incertidumbre Determinístico con Razones Explícitas
     components_invoked.append("uncertainty_calculator")
-    uncertainty_score = calculate_uncertainty(
+    uncertainty_score, confidence_reasons = calculate_uncertainty_with_reasons(
         fact_payload=fact_payload,
         caso_conocido=caso_match,
         rag_context=None,
         compliance_triggered=False
     )
+
+    # Paso 3.7: Drill-Down Conversacional sobre cargos específicos
+    cargos_actuales = fact_payload.get("cargos_actuales") or []
+    cargos_pasados = fact_payload.get("cargos_pasados") or []
+    cargo_especifico = buscar_cargo_especifico(cargos_actuales, cargos_pasados, request.message)
+    if cargo_especifico:
+        components_invoked.append("drill_down_lookup")
+        texto_drill = (
+            f"El cargo consultado corresponde a **{cargo_especifico['descripcion']}** "
+            f"(Código oficial: `{cargo_especifico['codigo_cargo']}`) por un importe de "
+            f"**{fact_payload.get('simbolo_moneda', 'S/')} {abs(cargo_especifico['monto']):.2f}** "
+            f"facturado bajo la categoría de {cargo_especifico['etiqueta']}.\n\n"
+            f"📌 **Motivo del cobro:** {cargo_especifico['motivo_negocio']}"
+        )
+        response = ChatResponse(
+            session_id=request.session_id,
+            intent_category="DRILL_DOWN_CARGO",
+            sentiment_score=historial.score_sentimiento,
+            confidence_score=99,
+            confidence_reasons=["Concepto localizado y verificado directamente en el detalle de facturación."],
+            messages=[
+                MessageChunk(text="Revisando el detalle del cargo que me consultas:", type="hook"),
+                MessageChunk(text=texto_drill, type="explanation"),
+            ],
+            personality_metadata=PersonalityMetadata(
+                lucia_tone=persona.tono_para_metadata(perfil_lexico)
+            ),
+        )
+        _adjuntar_desgloses(response, fact_payload)
+        _registrar_auditoria(
+            db, request.session_id, started_at, response.intent_category, components_invoked,
+            detected_event=fact_payload.get("detected_event"), confidence_score=response.confidence_score,
+            evidence=[f"{cargo_especifico['codigo_cargo']} - {cargo_especifico['descripcion']}"],
+        )
+        return _finalizar(db, request, response, fact_payload)
+
+    # Paso 3.8: Límite duro anti-loop: si la sesión acumula intentos no resueltos o ambiguos
+    es_loop_sin_resolver = _detectar_loop_sin_resolver(historial_conversacion, request.message)
+    if es_loop_sin_resolver and (fact_payload.get("detected_event") in ("INCREMENTO_OTROS", "CONSULTA_GENERAL") or uncertainty_score >= 0.5):
+        response = ChatResponse(
+            session_id=request.session_id,
+            intent_category="LIMITE_LOOP_DERIVACION_HUMANA",
+            sentiment_score=historial.score_sentimiento,
+            requires_human_intervention=True,
+            confidence_score=75,
+            confidence_reasons=["Límite anti-loop de seguridad alcanzado: derivación proactiva con expediente preparado."],
+            messages=[
+                MessageChunk(
+                    text="He revisado el detalle de tu factura, pero para asegurarme de que recibas una solución exacta y evitarte más demoras, he transferido tu caso directamente a un asesor especializado con todo el historial de lo que conversamos. 🙏",
+                    type="explanation"
+                )
+            ],
+            personality_metadata=PersonalityMetadata(
+                lucia_tone=persona.tono_para_metadata(perfil_lexico)
+            ),
+            handoff_context=_build_handoff_context(
+                request, historial, historial_conversacion,
+                motivo="LIMITE_LOOP_INTENTOS_EXCEDIDOS", fact_payload=fact_payload
+            ),
+        )
+        _registrar_auditoria(
+            db, request.session_id, started_at, response.intent_category, components_invoked,
+            detected_event=fact_payload.get("detected_event"), requires_human_intervention=True,
+            confidence_score=response.confidence_score, uncertainty_score=uncertainty_score,
+            handoff_context=response.handoff_context,
+        )
+        return _finalizar(db, request, response, fact_payload)
 
     # Si la incertidumbre supera el umbral → handoff inmediato, con contexto completo
     if requires_handoff(uncertainty_score):
@@ -656,6 +759,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             sentiment_score=historial.score_sentimiento,
             requires_human_intervention=True,
             confidence_score=int((1 - uncertainty_score) * 100),
+            confidence_reasons=confidence_reasons,
             messages=[
                 MessageChunk(
                     text="Para darte la mejor respuesta posible, necesito revisar tu caso con más detalle. "
@@ -673,7 +777,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         )
         # Sin este registro, cualquier caso que derivara por incertidumbre alta
         # (justo los casos genuinamente difíciles) desaparecía sin dejar rastro
-        # en el panel de cuarentena. No hay ciclo de aprendizaje si el caso más
+        # en el panel de cuarentena. No hay banco de soluciones si el caso más
         # necesitado de revisión humana nunca llega a la cola de validación.
         if not caso_match:
             solucion_serializada = {
@@ -718,9 +822,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             request.session_id,
             {"estado_resolucion": campo_verificado},
         )
-        # Nota: no se propaga uncertainty_score aquí porque esta rama no lo usó
-        # para decidir la confianza (ver _respuesta_consulta_directa): es una
-        # lectura directa de dato verificado, no una detección de patrón.
+        respuesta_directa.confidence_reasons = confidence_reasons
         _registrar_auditoria(
             db, request.session_id, started_at, respuesta_directa.intent_category, components_invoked,
             detected_event=fact_payload.get("detected_event"),
@@ -776,8 +878,9 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         pending_issue_followup=pending_issue_followup,
     )
 
-    # Adjuntar el confidence_score (inverso de incertidumbre)
+    # Adjuntar el confidence_score (inverso de incertidumbre) y motivos verificables
     response.confidence_score = int((1 - uncertainty_score) * 100)
+    response.confidence_reasons = confidence_reasons
     # Señal visible del diferenciador: ¿esta respuesta reutilizó conocimiento ya
     # validado por un humano/feedback, o se generó desde cero (caso nuevo)?
     response.caso_validado = caso_match is not None

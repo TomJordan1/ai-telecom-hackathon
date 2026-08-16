@@ -593,13 +593,25 @@ def update_caso_cuarentena(db: Session, caso_id: str, updates: dict):
     return caso
 
 def promover_caso_a_base(db: Session, caso_id: str, validado_por: str = "AGENTE_MOVISTAR"):
-    """Mueve un caso aprobado de cuarentena a base_casos."""
+    """Mueve un caso aprobado de cuarentena a base_casos y genera sus embeddings."""
     caso = get_caso_cuarentena(db, caso_id)
     if not caso:
         return None
+
+    condiciones = dict(caso.evidencias or {})
+    query_text = condiciones.get("user_message") or ""
+    if query_text:
+        try:
+            from app.services.embeddings import embed_query, embeddings_disponibles
+            if embeddings_disponibles():
+                condiciones["embedding"] = embed_query(query_text)
+                condiciones["query_ejemplo"] = query_text
+        except Exception as e:
+            print(f"[EMBED WARNING] No se pudo generar vector para caso promovido: {e}")
+
     nuevo_caso_base = models.BaseCasos(
         patron_problema=caso.patron_detectado,
-        condiciones=caso.evidencias,
+        condiciones=condiciones,
         solucion_estructurada=caso.solucion_propuesta,
         validado_por=validado_por
     )

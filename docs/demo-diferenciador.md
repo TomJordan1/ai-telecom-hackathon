@@ -1,4 +1,4 @@
-# Guion de demo: el ciclo de aprendizaje en vivo
+# Guion de demo: el ciclo de validación humana y reutilización de soluciones
 
 Este documento es el guion paso a paso para mostrar el diferenciador real del
 producto durante el pitch: **Lucía no responde siempre igual — cada caso que
@@ -14,15 +14,15 @@ Una misma consulta de facturación, resuelta dos veces:
 
 1. La **primera vez**, el patrón no tiene una solución validada todavía →
    Lucía responde igual (la explicación es correcta, viene del motor
-   determinista), pero la insignia de confianza sale en **ámbar, 80%** y el
+   determinista), pero la insignia de confianza sale en **ámbar, ~80%** (indicando caso en validación y motivos explícitos) y el
    caso queda registrado en cuarentena.
 2. Un asesor **valida el caso** desde el panel de administración — la misma
    acción que haría un agente real de Movistar tras confirmar que la
    explicación fue correcta.
-3. La **segunda vez** que alguien pregunta lo mismo, Lucía reutiliza la
-   solución ya aprobada. La insignia sale en **verde, 100%**.
+3. La **segunda vez** que alguien pregunta lo mismo (o una paráfrasis equivalente mediante matching semántico), Lucía reutiliza la
+   solución ya aprobada. La insignia sale en **verde, 100% (Solución Validada por Asesores)**.
 
-Ese salto de 80% a 100%, visible en la propia interfaz, es la reducción de
+Ese salto de 80% a 100%, visible en la propia interfaz con sus motivos de certeza y el **Modo Auditor**, es la reducción de
 carga al call center ocurriendo frente al jurado.
 
 ## Preparación (antes de la demo)

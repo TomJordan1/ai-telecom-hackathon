@@ -2,7 +2,7 @@
 
 # Lucía — Copiloto de Transparencia de Facturación
 
-*Asistente conversacional inteligente que explica variaciones en recibos de telecomunicaciones con desglose exacto al céntimo y aprendizaje supervisado.*
+*Asistente conversacional inteligente que explica variaciones en recibos de telecomunicaciones con desglose exacto al céntimo y banco de soluciones validadas por asesores.*
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -24,9 +24,11 @@
 A diferencia de los chatbots convencionales que intentan calcular o interpretar montos directamente mediante un modelo de lenguaje (con alto riesgo de alucinación), Lucía implementa una **separación estricta de responsabilidades**:
 
 1. **Motor Determinista**: Un núcleo en Python y SQL calcula con precisión matemática las diferencias entre recibos, aísla los conceptos facturados y clasifica la causa raíz.
-2. **Índice de Incertidumbre Calculado**: Evalúa de manera objetiva si existen datos suficientes y precedentes validados para resolver la consulta. Si la incertidumbre supera el umbral, deriva proactivamente a un asesor humano con el expediente completo.
-3. **Capa de Lenguaje Natural**: El modelo de lenguaje (DeepSeek vía LangChain) actúa exclusivamente como redactor empático sobre datos pre-verificados, garantizando respuestas comprensibles sin alterar cifras ni fechas.
-4. **Aprendizaje Supervisado Continuo**: Los casos nuevos ingresan en cuarentena y, tras la retroalimentación del cliente o la aprobación de un asesor en el panel de administración, se consolidan en la base de conocimiento para resolver futuras consultas idénticas con 100% de confianza.
+2. **Modo Auditor**: Expone la ecuación matemática verificable ($\text{Monto Anterior} + \sum \text{Impactos} = \text{Monto Actual}$) y la tabla de códigos de cargo reales del CSV (`CHARGE_CODE_ID` y `CHARGE_CODE_DESC`).
+3. **Índice de Incertidumbre con Motivos Explícitos**: Evalúa de manera objetiva si existen datos suficientes y precedentes validados para resolver la consulta, exponiendo las razones de certeza al cliente.
+4. **Capa de Lenguaje Natural**: El modelo de lenguaje (DeepSeek vía LangChain) actúa exclusivamente como redactor empático sobre datos pre-verificados, garantizando respuestas comprensibles sin alterar cifras ni fechas.
+5. **Banco de Soluciones Validadas por Asesores (Human-in-the-Loop)**: Los casos nuevos o ambiguos ingresan en cuarentena. Tras la homologación por asesores en el panel de control, se indexan con embeddings semánticos para responder consultas análogas con 100% de confianza.
+6. **Límite Anti-Loop Duro**: Si una consulta no se resuelve en 2 turnos o persiste la ambigüedad, el sistema deriva proactivamente al cliente a un asesor humano con el expediente listo.
 
 > [!TIP]
 > El proyecto incluye un modo simulado completo (`USE_MOCK_LLM=True` y `USE_MOCK_RAG=True`) que permite ejecutar y probar todas las capacidades localmente con SQLite sin necesidad de credenciales de pago o conexiones externas.
@@ -46,21 +48,21 @@ El sistema está estructurado en cinco capas desacopladas que garantizan trazabi
 ┌──────────────────────────────────▼─────────────────────────────────────┐
 │ 2. ORQUESTACIÓN Y SESIÓN (orchestrator.py)                             │
 │    • Carga de estado y memoria conversacional persistente              │
-│    • Clasificación y enrutamiento de intención                         │
+│    • Límite duro anti-loop (derivación tras 2 intentos fallidos)       │
+│    • Enrutamiento de intención y drill-down conversacional             │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
 ┌──────────────────────────────────▼─────────────────────────────────────┐
-│ 3. MOTOR DETERMINISTA Y REGLAS DE NEGOCIO (deterministic.py)          │
+│ 3. MOTOR DETERMINISTA Y AUDITORÍA (deterministic.py)                   │
 │    • Pre-filtro de cumplimiento legal / expresiones reguladas          │
-│    • Conciliación matemática de recibos ciclo a ciclo (desglose exacto)│
-│    • Detección del evento causal y reglas comerciales restrictivas     │
+│    • Conciliación matemática exacta (Ecuación Modo Auditor al céntimo) │
+│    • Detección causal y reglas comerciales restrictivas                │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
 ┌──────────────────────────────────▼─────────────────────────────────────┐
-│ 4. BASE DE CONOCIMIENTO Y RAG (case_matcher.py / rag.py)               │
-│    • Coincidencia con soluciones previamente validadas                 │
-│    • Recuperación semántica en pgvector (Supabase)                     │
-│    • Cuarentena de casos nuevos y cálculo de incertidumbre             │
+│ 4. BASE DE CONOCIMIENTO Y VALIDACIÓN (case_matcher.py / rag.py)        │
+│    • Búsqueda semántica por embeddings sobre soluciones aprobadas      │
+│    • Cuarentena de casos nuevos y cálculo de incertidumbre con motivos │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
 ┌──────────────────────────────────▼─────────────────────────────────────┐
@@ -70,32 +72,20 @@ El sistema está estructurado en cinco capas desacopladas que garantizan trazabi
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Flujo de Ejecución por Turno
-
-```mermaid
-flowchart TD
-    A[Mensaje del Usuario] --> B[Pre-filtro de Cumplimiento]
-    B -- Alerta Legal / Riesgo --> C[Corte Inmediato / Mensaje Institucional]
-    B -- Pasa Filtro --> D[Motor Determinista]
-    D --> E[Cálculo de Variación y Detección de Evento]
-    E --> F{¿Existe Caso Validado?}
-    F -- Sí (100% Confianza) --> I[Inyección de Solución Homologada]
-    F -- No --> G[Recuperación RAG en pgvector]
-    G --> H[Cálculo de Índice de Incertidumbre]
-    H -- Incertidumbre Alta --> J[Derivación a Asesor Humano]
-    H -- Certeza Aceptable --> K[Redacción Estructurada con LLM]
-    I --> K
-    K --> L[Validación de Hechos y Post-Corrección]
-    L --> M[Envío al Usuario + Registro en Auditoría / Cuarentena]
-```
-
 ---
 
 ## Características
 
-- **Desglose de Variación al Céntimo**: La suma de impactos individuales coincide exactamente con la diferencia entre recibos (`monto_actual - monto_anterior`).
+- **Modo Auditor al Céntimo**: Desplegable interactivo en cada respuesta que muestra la ecuación exacta y los códigos oficiales del CSV (`CHARGE_CODE_ID` y `CHARGE_CODE_DESC`).
+- **Confianza Visible con Motivos**: Explicación clara de por qué una respuesta tiene alta certeza o por qué se encuentra en validación.
+- **Drill-Down Conversacional**: Capacidad de preguntar por conceptos y cifras específicas dentro del desglose (ej: *"¿y ese cargo de S/ 12.90 qué es?"*).
+- **Matching Semántico Vectorial**: Búsqueda por similitud coseno de embeddings sobre el banco de soluciones validadas por asesores.
+- **Límite Duro Anti-Loop**: Transferencia automática e inmediata a un agente humano con expediente tras 2 intentos no resueltos.
 - **13 Eventos Causales Catalogados**: Identifica con exactitud fin de promociones, prorrateos por cambio de plan, cuotas de equipos, cargos por reconexión, ajustes por notas de crédito, consumos adicionales y más.
-- **Ciclo de Aprendizaje en Vivo**: Diferenciación visible entre casos nuevos en aprendizaje (insignia ámbar, ~80% de confianza) y casos validados por asesores (insignia verde, 100% de confianza).
+- **Salvaguardas Comerciales Anti-Alucinación**: La recomendación de optimización de planes solo se activa cuando se cumplen 4 condiciones simultáneas y existe un plan verificado en el catálogo con mejora tangible de tarifa o capacidad.
+- **Alertas Proactivas de Vencimiento**: Identifica contratos y promociones por expirar en los próximos ciclos, calculando el impacto financiero anticipado.
+- **Memoria Contextual y Emocional**: Mantiene bitácora de conversación y detecta carga emocional con caducidad programada.
+- **Panel de Administración**: Gestión visual de cola de atención humana, bandeja de cuarentena, repositorio de casos aprobados y ejecutor de alertas proactivas.
 - **Salvaguardas Comerciales Anti-Alucinación**: La recomendación de optimización de planes solo se activa cuando se cumplen 4 condiciones simultáneas y existe un plan verificado en el catálogo con mejora tangible de tarifa o capacidad.
 - **Alertas Proactivas de Vencimiento**: Identifica contratos y promociones por expirar en los próximos ciclos, calculando el impacto financiero anticipado.
 - **Memoria Contextual y Emocional**: Mantiene bitácora de conversación de hasta 12 turnos y detecta carga emocional con caducidad programada (14 días).
@@ -306,11 +296,11 @@ Endpoint principal de procesamiento conversacional.
 }
 ```
 
-### Endpoints de Administración y Ciclo de Aprendizaje
+### Endpoints de Administración y Banco de Conocimiento
 
 | Método | Endpoint | Propósito |
 |---|---|---|
-| `GET` | `/api/v1/admin/cuarentena` | Lista consultas en aprendizaje pendientes de homologación. |
+| `GET` | `/api/v1/admin/cuarentena` | Lista consultas en cuarentena pendientes de homologación. |
 | `POST` | `/api/v1/admin/validar/{caso_id}` | Aprueba y promueve un caso a la base de conocimiento homologada. |
 | `GET` | `/api/v1/admin/base-casos` | Consulta las soluciones homologadas y su frecuencia de reutilización. |
 | `GET` | `/api/v1/admin/handoff-queue` | Bandeja de casos derivados a atención humana con expediente. |

@@ -39,6 +39,31 @@ class ChargeBreakdownItem(BaseModel):
     conceptos: List[str] = []
 
 
+class AuditorItem(BaseModel):
+    """
+    Fila del Modo Auditor con trazabilidad al código de facturación original (CSV).
+    """
+    codigo_cargo: str
+    concepto: str
+    categoria: str
+    monto_anterior: float = 0.0
+    monto_actual: float = 0.0
+    impacto: float = 0.0
+
+
+class AuditorEquation(BaseModel):
+    """
+    Ecuación algebraica exacta: Monto Anterior + Σ Impactos = Monto Actual.
+    Demuestra la conciliación matemática al céntimo.
+    """
+    monto_anterior: float
+    monto_actual: float
+    suma_impactos: float
+    conciliado: bool
+    diferencia_centimos: float = 0.0
+    desglose: List[AuditorItem] = []
+
+
 class VariationBreakdownItem(BaseModel):
     """
     Aporte de una categoría a la variación entre el recibo actual y el previo.
@@ -51,6 +76,7 @@ class VariationBreakdownItem(BaseModel):
     monto_anterior: float
     impacto: float
     conceptos: List[str] = []
+    codigos_cargo: List[str] = []
 
 
 class BillingAdjustments(BaseModel):
@@ -114,6 +140,7 @@ class ChatResponse(BaseModel):
     # y el porqué de la variación sin volver a consultar el backend.
     current_bill_breakdown: List[ChargeBreakdownItem] = []
     variation_breakdown: List[VariationBreakdownItem] = []
+    auditor_breakdown: Optional[AuditorEquation] = None
     billing_adjustments: Optional[BillingAdjustments] = None
     upcoming_alerts: List[UpcomingAlert] = []
     plan_optimizer_suggestion: PlanOptimizerSuggestion = PlanOptimizerSuggestion()
@@ -121,10 +148,14 @@ class ChatResponse(BaseModel):
     personality_metadata: PersonalityMetadata = PersonalityMetadata()
     handoff_context: Optional[Any] = None
     confidence_score: int = Field(99, ge=0, le=100)
+    confidence_reasons: List[str] = Field(
+        default_factory=list,
+        description="Razones explícitas y verificables que sustentan el nivel de confianza."
+    )
     caso_validado: bool = Field(
         False,
-        description="True si la respuesta reutilizó una solución ya validada en base_casos, "
-                    "en vez de generarse desde cero. Es la señal visible del ciclo de aprendizaje."
+        description="True si la respuesta reutilizó una solución ya validada por asesores en base_casos, "
+                    "en vez de generarse desde cero. Es la señal visible del banco de conocimiento."
     )
     compliance_triggered: bool = False
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
