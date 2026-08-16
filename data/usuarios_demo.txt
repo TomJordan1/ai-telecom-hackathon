@@ -1,5 +1,0 @@
-fin_promo=real_40280547
-prorrateo=real_40030164
-cuota_equipo=real_40332582
-reconexion=real_40033427
-deuda_activa=real_40016794
