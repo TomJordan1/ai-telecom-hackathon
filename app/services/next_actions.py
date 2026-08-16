@@ -54,16 +54,21 @@ def resolve_next_actions(
         )
         return actions
 
-    # 2. Caso: Usuario visitante sin cuenta vinculada
-    if not fact_payload or "error" in fact_payload or response.intent_category in ("CONSULTA_SIN_CUENTA", "CONSULTA_GENERAL_PLANES"):
-        actions.append(
-            NextBestAction(
-                id="VINCULAR_CUENTA",
-                titulo="🔑 Vincular mi cuenta financiera",
-                tipo="consulta",
-                payload={"action": "prompt_account"},
+    # 2. Caso: Usuario visitante sin cuenta vinculada (solo cuando el intent
+    #    indica explícitamente que no hay cuenta, no en turnos conversacionales
+    #    genéricos donde fact_payload es None porque no se tocó facturación).
+    es_visitante_sin_cuenta = response.intent_category in ("CONSULTA_SIN_CUENTA", "CONSULTA_GENERAL_PLANES")
+    tiene_cuenta = bool(request and request.user_id)
+    if es_visitante_sin_cuenta or (not fact_payload and not tiene_cuenta):
+        if not tiene_cuenta:
+            actions.append(
+                NextBestAction(
+                    id="VINCULAR_CUENTA",
+                    titulo="🔑 Vincular mi cuenta financiera",
+                    tipo="consulta",
+                    payload={"action": "prompt_account"},
+                )
             )
-        )
         actions.append(
             NextBestAction(
                 id="EXPLORE_PLANS",
@@ -82,7 +87,28 @@ def resolve_next_actions(
         )
         return actions
 
-    # 3. Caso: Cliente con datos verificados de facturación
+    # 3. Caso: Cliente con datos verificados de facturación.
+    #    Si no hay fact_payload (turno conversacional de usuario con cuenta),
+    #    devolvemos acciones genéricas sin pedir vinculación.
+    if not fact_payload:
+        actions.append(
+            NextBestAction(
+                id="ASK_BILLING",
+                titulo="🧾 Consultar mi factura",
+                tipo="consulta",
+                payload={"query": "¿Cuál es el estado de mi factura actual?"},
+            )
+        )
+        actions.append(
+            NextBestAction(
+                id="REGISTER_RESOLVED",
+                titulo="✅ Todo claro, gracias",
+                tipo="consulta",
+                payload={"status": "resolved"},
+            )
+        )
+        return actions
+
     current_bill = fact_payload.get("current_bill") or {}
     monto_actual = float(current_bill.get("amount", 0.0))
     periodo_actual = current_bill.get("issue_date", "")
