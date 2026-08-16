@@ -153,6 +153,25 @@ def update_historial(db: Session, session_id: str, updates: dict):
         db.refresh(historial)
     return historial
 
+def marcar_handoff(db: Session, session_id: str):
+    from datetime import datetime
+    historial = db.query(models.HistorialInteracciones).filter(models.HistorialInteracciones.session_id == session_id).first()
+    if historial:
+        historial.handed_off_to_human = True
+        historial.handed_off_at = datetime.utcnow()
+        db.commit()
+        db.refresh(historial)
+    return historial
+
+def revocar_handoff(db: Session, session_id: str):
+    historial = db.query(models.HistorialInteracciones).filter(models.HistorialInteracciones.session_id == session_id).first()
+    if historial:
+        historial.handed_off_to_human = False
+        historial.handed_off_at = None
+        db.commit()
+        db.refresh(historial)
+    return historial
+
 MAX_TURNOS_HISTORIAL = 12  # ~6 intercambios usuario/Lucía; suficiente para dar
                            # continuidad sin acumular contexto indefinidamente.
 

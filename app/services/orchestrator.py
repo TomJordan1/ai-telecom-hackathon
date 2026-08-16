@@ -115,6 +115,11 @@ def _finalizar(db: Session, request: ChatRequest, response: ChatResponse) -> Cha
     acotada de la sesión. Sin este registro, el siguiente turno no tiene forma
     de saber qué ya se dijo y el modelo termina repitiéndose.
     """
+    from app.services.text_utils import split_long_messages
+    
+    # Fragmentar mensajes largos para no saturar al usuario en WhatsApp/App
+    response.messages = split_long_messages(response.messages, max_words=25)
+    
     crud.append_turno_conversacion(db, request.session_id, "user", request.message)
     crud.append_turno_conversacion(
         db, request.session_id, "lucia", _texto_completo(response), response.intent_category
@@ -135,6 +140,34 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
 
     # Paso 1: Recepción, Carga de Estado y Memoria
     historial = crud.get_or_create_historial(db, request.session_id, request.user_id)
+    
+    # Manejo de Handoff y Auto-retorno (Timeout)
+    HANDOFF_TIMEOUT_MINUTES = 30
+    if historial.handed_off_to_human:
+        if historial.handed_off_at and (datetime.utcnow() - historial.handed_off_at) > timedelta(minutes=HANDOFF_TIMEOUT_MINUTES):
+            # El timeout se cumplió, revocamos el handoff automáticamente
+            crud.revocar_handoff(db, request.session_id)
+            # Refrescamos el estado
+            historial = crud.get_or_create_historial(db, request.session_id, request.user_id)
+            # Agregamos una nota silenciosa para que Lucía sepa qué pasó
+            crud.append_turno_conversacion(
+                db, request.session_id, "lucia", 
+                "El sistema retomó el control de la conversación porque el asesor humano estuvo inactivo mucho tiempo. Disculpa la demora."
+            )
+        else:
+            # Aún en tiempo de handoff, abortar el flujo y devolver mensaje interceptado
+            return ChatResponse(
+                session_id=request.session_id,
+                intent_category="HANDOFF_ACTIVO",
+                sentiment_score=historial.score_sentimiento,
+                messages=[
+                    MessageChunk(
+                        text="Aún estás siendo atendido por un asesor humano. Por favor, aguarda un momento.",
+                        type="explanation"
+                    )
+                ]
+            )
+
     comentarios = historial.comentarios_emocionales or []
     pending_emotions = [e for e in comentarios if not e.get("referenciado", False)]
     historial_conversacion = historial.historial_conversacion or []
@@ -262,6 +295,9 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
 
     # Si la incertidumbre supera el umbral → handoff inmediato, con contexto completo
     if requires_handoff(uncertainty_score):
+        # Marcar la sesión en base de datos como entregada a un humano
+        crud.marcar_handoff(db, request.session_id)
+        
         response = ChatResponse(
             session_id=request.session_id,
             intent_category="DERIVACION_INCERTIDUMBRE",

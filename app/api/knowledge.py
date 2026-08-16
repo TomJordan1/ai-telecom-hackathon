@@ -92,6 +92,20 @@ def validate_case(caso_id: str, request: ValidarCasoRequest, db: Session = Depen
         "patron": nuevo_caso.patron_problema
     }
 
+@router.post("/admin/handoff/return/{session_id}")
+def return_handoff_to_bot(session_id: str, db: Session = Depends(get_db)):
+    """
+    Devuelve explícitamente el control de la sesión a Lucía, 
+    revocando la bandera de handoff humano antes del timeout automático.
+    """
+    historial = crud.revocar_handoff(db, session_id)
+    if not historial:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    return {
+        "status": "ok",
+        "mensaje": "Control devuelto a Lucía exitosamente."
+    }
+
 @router.get("/admin/handoff-queue")
 def list_handoff_queue(solo_pendientes: bool = True, db: Session = Depends(get_db)):
     """
