@@ -45,3 +45,10 @@ python-telegram-bot==22.8
 pandas==2.2.3
 openpyxl==3.1.5
 psycopg2-binary==2.9.10
+
+# --- Infografías (visual_1/2/3: variación, desglose, histórico del recibo) ---
+# Usado por app/services/image_renderer.py para generar las imágenes PNG que
+# se envían por WhatsApp. Se eligió Pillow (dibujo directo) en vez de un
+# navegador headless (Playwright) para no depender de descargar un binario de
+# Chromium en el servidor de despliegue.
+Pillow==11.1.0

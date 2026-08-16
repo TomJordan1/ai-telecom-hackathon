@@ -3,6 +3,7 @@ import requests
 import time
 from app.core.config import settings
 from app.core.schemas import ChatResponse
+from app.services.image_renderer import select_and_render_visual
 
 def _endpoint_mensajes() -> str:
     """
@@ -12,6 +13,13 @@ def _endpoint_mensajes() -> str:
     return (
         f"https://graph.facebook.com/{settings.WHATSAPP_API_VERSION}"
         f"/{settings.WHATSAPP_PHONE_ID}/messages"
+    )
+
+
+def _endpoint_media() -> str:
+    return (
+        f"https://graph.facebook.com/{settings.WHATSAPP_API_VERSION}"
+        f"/{settings.WHATSAPP_PHONE_ID}/media"
     )
 
 
@@ -87,6 +95,76 @@ def send_whatsapp_interactive(to_number: str, text: str, buttons: list):
     except Exception as e:
         print(f"Error enviando WhatsApp interactivo: {e}")
 
+
+def _upload_media(image_bytes: bytes, filename: str = "recibo.png", mime_type: str = "image/png") -> str | None:
+    """
+    Sube el binario de la imagen directamente a Meta (endpoint /media) y
+    devuelve el media_id para referenciarlo al enviar el mensaje.
+
+    Se elige subir el binario en vez de alojar la imagen en una URL pública
+    propia: así no hace falta exponer una carpeta estática nueva ni depender
+    de que el túnel (ngrok) sirva también archivos, solo el webhook.
+    """
+    if not settings.WHATSAPP_TOKEN or not settings.WHATSAPP_PHONE_ID:
+        print(f"[MOCK WA] Subiendo imagen simulada ({len(image_bytes)} bytes, {filename})")
+        return "mock_media_id"
+
+    url = _endpoint_media()
+    headers = {"Authorization": f"Bearer {settings.WHATSAPP_TOKEN}"}
+    files = {"file": (filename, image_bytes, mime_type)}
+    data = {"messaging_product": "whatsapp", "type": mime_type}
+
+    try:
+        response = requests.post(url, headers=headers, files=files, data=data)
+        response.raise_for_status()
+        return response.json().get("id")
+    except Exception as e:
+        print(f"Error subiendo imagen a WhatsApp: {e}")
+        try:
+            print(f"  Detalle de Meta: {response.text}")
+        except Exception:
+            pass
+        return None
+
+
+def send_whatsapp_image(to_number: str, image_bytes: bytes, caption: str | None = None):
+    """Sube una imagen PNG (bytes) y la envía como mensaje de imagen."""
+    media_id = _upload_media(image_bytes)
+    if not media_id:
+        return
+
+    if media_id == "mock_media_id":
+        print(f"[MOCK WA] Imagen enviada a {to_number} (media_id={media_id}). Caption: {caption}")
+        return
+
+    clean_number = "".join(filter(str.isdigit, str(to_number)))
+    url = _endpoint_mensajes()
+    headers = {
+        "Authorization": f"Bearer {settings.WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    image_payload = {"id": media_id}
+    if caption:
+        image_payload["caption"] = caption
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": clean_number,
+        "type": "image",
+        "image": image_payload,
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"Error enviando imagen por WhatsApp: {e}")
+        try:
+            print(f"  Detalle de Meta: {response.text}")
+        except Exception:
+            pass
+
+
 def _es_detalle_facturacion(text: str) -> bool:
     """
     Verifica que el texto realmente sea un desglose o detalle estructurado
@@ -127,6 +205,18 @@ def process_and_send_whatsapp(to_number: str, chat_response: ChatResponse):
             text = f"📊 *Detalle:*\n```{text}```"
             
         send_whatsapp_text(to_number, text)
+
+    # Infografía de apoyo (a lo más una por turno, misma prioridad que en
+    # visuals.js): variación del recibo > desglose por categoría > histórico.
+    # Se envuelve en try/except a propósito: si el render falla, la
+    # conversación de texto ya enviada arriba no debe verse interrumpida.
+    try:
+        imagen = select_and_render_visual(chat_response)
+        if imagen:
+            time.sleep(0.6)
+            send_whatsapp_image(to_number, imagen)
+    except Exception as e:
+        print(f"[WA VISUAL] No se pudo generar/enviar la infografía: {e}")
         
     # 1. Sugerencia comercial (Upsell) convertida a botones de WhatsApp
     suggestion = chat_response.plan_optimizer_suggestion

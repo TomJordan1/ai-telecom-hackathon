@@ -756,6 +756,11 @@ async function sendMessage() {
             addFeedbackButtons(ultimoWrap);
         }
 
+        // Infografía de apoyo (a lo más una por turno): variación del recibo,
+        // desglose por categoría, o evolución histórica, según qué datos
+        // verificados trajo este turno. Ver visuals.js.
+        renderVisualizations(data);
+
         if (data.next_best_actions && data.next_best_actions.length > 0) {
             await sleep(300);
             addNextBestActions(data.next_best_actions);
