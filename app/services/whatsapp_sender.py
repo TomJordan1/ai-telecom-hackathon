@@ -254,6 +254,18 @@ def process_and_send_whatsapp(to_number: str, chat_response: ChatResponse):
                     titulo_btn = "✅ Todo claro"
                 elif action.id == "VINCULAR_CUENTA":
                     titulo_btn = "🔑 Vincular cuenta"
+                elif action.id == "ASK_BILLING":
+                    titulo_btn = "🧾 Ver mi factura"
+                elif action.id == "HOW_IT_WORKS":
+                    titulo_btn = "❓ Cómo funciona"
+                elif action.id == "EXPLORE_PLANS":
+                    titulo_btn = "📱 Ver planes"
+                elif action.id == "CANAL_CHAT":
+                    titulo_btn = "💬 Seguir por chat"
+                elif action.id == "CANAL_LLAMADA":
+                    titulo_btn = "📞 Llamada"
+                elif action.id == "CANAL_WHATSAPP":
+                    titulo_btn = "📲 WhatsApp"
                 else:
                     titulo_btn = titulo_btn[:20]
             wa_botones.append({"id": f"action_{action.id.lower()}", "title": titulo_btn[:20]})
