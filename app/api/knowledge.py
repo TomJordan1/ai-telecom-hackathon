@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
@@ -396,8 +396,9 @@ def enviar_alerta_manual(request: EnviarAlertaManualRequest, db: Session = Depen
 # --- Handoff a Agente Real ---
 
 @router.get("/admin/handoff/{session_id}/historial")
-def get_handoff_historial(session_id: str, db: Session = Depends(get_db)):
+def get_handoff_historial(session_id: str, response: Response, db: Session = Depends(get_db)):
     from app.db.models import HistorialInteracciones
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     historial = db.query(HistorialInteracciones).filter(HistorialInteracciones.session_id == session_id).first()
     if not historial:
         return {"historial_conversacion": [], "en_atencion_humana": False}
