@@ -1,4 +1,6 @@
 import re
+import uuid
+from typing import Optional, Dict, Any, List, Union
 from datetime import datetime
 from sqlalchemy import desc, distinct, func
 from sqlalchemy.exc import IntegrityError
@@ -583,17 +585,95 @@ def create_caso_base(db: Session, data: dict):
     db.refresh(caso)
     return caso
 
-# --- Cuarentena de Casos ---
+# --- Cuarentena de Casos y Folios ---
+
+def generar_folio() -> str:
+    """Genera un folio corto y legible (ej: CASO-8F3A2) para trazabilidad del cliente."""
+    return f"CASO-{uuid.uuid4().hex[:5].upper()}"
+
 
 def create_caso_cuarentena(db: Session, data: dict):
+    if not data.get("folio"):
+        data["folio"] = generar_folio()
     caso = models.CuarentenaCasos(**data)
     db.add(caso)
     db.commit()
     db.refresh(caso)
     return caso
 
+
 def get_caso_cuarentena(db: Session, caso_id: str):
     return db.query(models.CuarentenaCasos).filter(models.CuarentenaCasos.id == caso_id).first()
+
+
+def consultar_estado_caso(
+    db: Session,
+    session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    folio: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Busca el estado en tiempo real de un caso por su folio corto o por la sesión/usuario.
+    Retorna el estado de resolución (PENDIENTE, EN_GESTION, VALIDADO, ATENDIDO).
+    """
+    caso_cuarentena = None
+    if folio:
+        folio_clean = folio.strip().upper()
+        caso_cuarentena = db.query(models.CuarentenaCasos).filter(models.CuarentenaCasos.folio == folio_clean).first()
+
+    if not caso_cuarentena and session_id:
+        caso_cuarentena = (
+            db.query(models.CuarentenaCasos)
+            .filter(models.CuarentenaCasos.session_id == session_id)
+            .order_by(models.CuarentenaCasos.fecha_consulta.desc())
+            .first()
+        )
+
+    audit_handoff = None
+    if session_id:
+        audit_handoff = (
+            db.query(models.AuditLog)
+            .filter(models.AuditLog.session_id == session_id, models.AuditLog.requires_human_intervention == True)
+            .order_by(models.AuditLog.timestamp.desc())
+            .first()
+        )
+
+    if not caso_cuarentena and not audit_handoff:
+        return None
+
+    folio_retornado = caso_cuarentena.folio if (caso_cuarentena and caso_cuarentena.folio) else None
+    if not folio_retornado and audit_handoff and audit_handoff.handoff_context:
+        folio_retornado = audit_handoff.handoff_context.get("folio")
+
+    if not folio_retornado:
+        folio_retornado = f"CASO-{(session_id or 'REC')[:5].upper()}"
+
+    patron = (caso_cuarentena.patron_detectado if caso_cuarentena else (audit_handoff.detected_event or "CONSULTA_FACTURACION"))
+
+    if caso_cuarentena and caso_cuarentena.estado_validacion == "APROBADO":
+        estado = "VALIDADO"
+        mensaje_estado = "Tu caso ya fue validado y homologado con éxito por un asesor de Movistar."
+    elif audit_handoff and audit_handoff.atendido:
+        estado = "ATENDIDO"
+        mensaje_estado = "Tu caso ya fue gestionado y marcado como resuelto por el asesor especializado."
+    elif audit_handoff and not audit_handoff.atendido:
+        estado = "EN_GESTION_ASESOR"
+        canal = audit_handoff.handoff_context.get("canal_preferido", "CHAT") if audit_handoff.handoff_context else "CHAT"
+        canal_nombre = {"CHAT": "Chat Web", "LLAMADA": "Llamada Telefónica", "WHATSAPP": "WhatsApp"}.get(canal, canal)
+        mensaje_estado = f"Tu expediente está en bandeja prioritaria de atención humana. Un asesor continuará contigo vía {canal_nombre} con todo el detalle de tu recibo."
+    else:
+        estado = "PENDIENTE_REVISION"
+        mensaje_estado = "Tu caso se encuentra registrado en nuestra bandeja de validación y seguimiento."
+
+    fecha_dt = caso_cuarentena.fecha_consulta if caso_cuarentena else audit_handoff.timestamp
+    return {
+        "folio": folio_retornado,
+        "patron": patron,
+        "estado": estado,
+        "mensaje_estado": mensaje_estado,
+        "fecha": fecha_dt.strftime("%d/%m/%Y %H:%M") if fecha_dt else "",
+    }
+
 
 def get_cuarentena_pendiente(db: Session):
     return db.query(models.CuarentenaCasos).filter(

@@ -272,6 +272,45 @@ def main():
         print(f"  [FALLO] Anti-loop test falló: {e}")
         fallos += 1
 
+    # --- Test P0: Salida de escalamiento garantizada ("0" y "asesor") ---
+    print(f"\n{'=' * 70}")
+    print("  [TEST P0] Salida de escalamiento garantizada directa ('0' / 'asesor')")
+    print(f"{'=' * 70}")
+    sesion_esc = f"smoke-{corrida}-escalamiento"
+    try:
+        r_esc = requests.post(f"{args.base}/chat", json={"session_id": sesion_esc, "user_id": cuenta_loop, "message": "0"})
+        r_esc.raise_for_status()
+        d_esc = r_esc.json()
+        if d_esc.get("requires_human_intervention") and d_esc.get("intent_category") == "SOLICITUD_AGENTE" and d_esc.get("folio"):
+            print(f"  [OK] Escalamiento garantizado por '0' exitoso. Folio asignado: {d_esc.get('folio')}")
+            for m in d_esc.get("messages", []):
+                print(f"  Lucía: {m.get('text')}")
+        else:
+            print(f"  [FALLO] Escalamiento por '0' falló: {d_esc}")
+            fallos += 1
+    except Exception as e:
+        print(f"  [FALLO] Test escalamiento directo falló: {e}")
+        fallos += 1
+
+    # --- Test P0: Consulta de estado de caso / folio ---
+    print(f"\n{'=' * 70}")
+    print("  [TEST P0] Consulta de estado de caso ('¿cómo va mi caso?')")
+    print(f"{'=' * 70}")
+    try:
+        r_status = requests.post(f"{args.base}/chat", json={"session_id": sesion_esc, "user_id": cuenta_loop, "message": "¿cómo va mi caso?"})
+        r_status.raise_for_status()
+        d_status = r_status.json()
+        if d_status.get("intent_category") == "CONSULTA_ESTADO_CASO" and d_status.get("folio"):
+            print(f"  [OK] Consulta de estado exitosa. Folio consultado: {d_status.get('folio')}")
+            for m in d_status.get("messages", []):
+                print(f"  Lucía: {m.get('text')}")
+        else:
+            print(f"  [FALLO] Consulta de estado no reconoció el caso: {d_status}")
+            fallos += 1
+    except Exception as e:
+        print(f"  [FALLO] Test consulta estado caso falló: {e}")
+        fallos += 1
+
     print(f"\n{'=' * 70}")
     if fallos:
         print(f"Resultado: {fallos} escenario(s) con problemas.")

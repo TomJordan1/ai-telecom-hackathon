@@ -789,6 +789,11 @@ function nuevaConversacion() {
     location.reload();
 }
 
+function pedirAsesorHumano() {
+    messageInput.value = "Deseo comunicarme con un asesor humano por favor.";
+    sendMessage();
+}
+
 sendButton.addEventListener('click', sendMessage);
 messageInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') sendMessage();
