@@ -1,6 +1,6 @@
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
 from sqlalchemy.orm import Session
@@ -24,7 +24,7 @@ from app.services.uncertainty_calculator import (
     requires_handoff,
 )
 from app.services.feedback_handler import register_new_case
-from app.services.intent_classifier import route, PATRONES_SENSIBLES, has_billing_signals
+from app.services.intent_classifier import route, PATRONES_SENSIBLES, has_billing_signals, has_handoff_signals, has_case_status_signals
 from app.services.next_actions import resolve_next_actions
 from app.services import persona
 from app.core.schemas import (
@@ -762,7 +762,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     fact_payload = calculate_billing_facts(request.user_id, db)
 
     # Manejo de usuarios visitantes (no clientes o sin cuenta identificada aún)
-    if "error" in fact_payload:
+    if fact_payload.get("detected_event") == "CONSULTA_GENERAL" and fact_payload.get("current_bill") is None:
         # 1. Si preguntan explícitamente por un recibo específico sin cuenta vinculada:
         pregunta_facturacion_personal = any(
             w in request.message.lower()
