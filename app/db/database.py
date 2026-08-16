@@ -73,3 +73,8 @@ def run_lightweight_migrations():
             _agregar_columna("audit_log", "handoff_context", "JSON")
         if "atendido" not in columnas_audit:
             _agregar_columna("audit_log", "atendido", f"BOOLEAN DEFAULT {default_false}")
+
+    if "cuarentena_casos" in inspector.get_table_names():
+        columnas_cuarentena = {c["name"] for c in inspector.get_columns("cuarentena_casos")}
+        if "folio" not in columnas_cuarentena:
+            _agregar_columna("cuarentena_casos", "folio", "VARCHAR(30)")

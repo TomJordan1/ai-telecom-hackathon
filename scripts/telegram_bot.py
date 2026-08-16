@@ -3,7 +3,7 @@ import re
 import asyncio
 import requests
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ChatAction
 
@@ -15,12 +15,6 @@ API_URL = f"{API_BASE}/chat"
 CUENTA_DEMO_URL = f"{API_BASE}/cuenta-demo"
 
 # Cuenta financiera con la que este bot consulta la API.
-#
-# En producción se resolvería el chat_id de Telegram contra contactos_usuario.
-# Para la demo se toma una cuenta real del dataset: se puede fijar con
-# DEMO_ACCOUNT_ID en el .env o dejar que el backend la resuelva. Antes había
-# aquí un identificador del set ficticio que dejó de existir al migrar al
-# dataset real, y todas las consultas del bot fallaban.
 CUENTA_DEMO = os.getenv("DEMO_ACCOUNT_ID")
 
 
@@ -61,9 +55,14 @@ def _es_detalle_facturacion(text: str) -> bool:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    custom_keyboard = [
+        [KeyboardButton("👤 Hablar con un asesor"), KeyboardButton("📊 ¿Por qué varió mi recibo?")]
+    ]
+    reply_markup = ReplyKeyboardMarkup(custom_keyboard, resize_keyboard=True)
     await update.message.reply_text(
         "¡Hola! Soy Lucía, tu Copiloto de Facturación.\n"
-        "Escríbeme cualquier consulta sobre tu recibo."
+        "Escríbeme cualquier consulta sobre tu recibo o usa los accesos directos:",
+        reply_markup=reply_markup
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -151,7 +150,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text="Entendido, mantendremos tu plan actual.")
     elif cb_data.startswith("nba_"):
         action_id = cb_data.replace("nba_", "")
-        if action_id == "PAY_BILL":
+        if action_id == "CANAL_CHAT":
+            await query.message.reply_text("💬 Tu asesor continuará contigo directamente por este chat con todo el expediente preparado.")
+        elif action_id == "CANAL_LLAMADA":
+            await query.message.reply_text("📞 Un asesor se comunicará contigo vía llamada telefónica con todo el detalle de tu recibo.")
+        elif action_id == "CANAL_WHATSAPP":
+            await query.message.reply_text("📲 Un asesor te contactará al WhatsApp con todo el contexto de tu consulta.")
+        elif action_id == "PAY_BILL":
             await query.message.reply_text("💳 Redirigiendo a la pasarela de pagos seguros de Movistar (Yape/Plin/Tarjeta). ¡Pago registrado en simulación!")
         elif action_id == "VIEW_BREAKDOWN":
             await query.message.reply_text("📊 Puedes consultar el desglose completo de tus conceptos en la App Mi Movistar o pedirme 'ver desglose'.")

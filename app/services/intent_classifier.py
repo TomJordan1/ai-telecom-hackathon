@@ -101,6 +101,19 @@ def detectar_solicitud_sensible(message: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Solicitud explícita de agente humano
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Solicitud explícita y palabras clave exactas de escalamiento directo
+# ---------------------------------------------------------------------------
+_EXACT_ESCALATION_REGEX = re.compile(
+    r"^(0|asesor|asesora|humano|humana|agente|operador|operadora|ayuda|hablar con alguien|persona real|atencion humana)$",
+    re.IGNORECASE
+)
+
+_CONSULTA_CASO_REGEX = re.compile(
+    r"\b(c[oó]mo\s+va\s+mi\s+caso|estado\s+(de\s+mi\s+)?caso|qu[eé]\s+pas[oó]\s+con\s+mi\s+caso|revisar\s+mi\s+caso|seguimiento\s+(de\s+)?caso|mi\s+folio|CASO-[A-Z0-9]{4,8})\b",
+    re.IGNORECASE
+)
+
 _HANDOFF_PATTERNS = [
     r"\b(asesor|agente|representante)(a|es)?\b",
     r"\bpersona\s+(real|humana)\b",
@@ -154,6 +167,10 @@ class RoutingDecision:
     def es_solicitud_sensible(self) -> bool:
         return self.intent == "SOLICITUD_SENSIBLE"
 
+    @property
+    def es_consulta_caso(self) -> bool:
+        return self.intent == "CONSULTA_ESTADO_CASO"
+
 
 def has_billing_signals(message: str) -> bool:
     texto = message.lower()
@@ -161,8 +178,14 @@ def has_billing_signals(message: str) -> bool:
 
 
 def has_handoff_signals(message: str) -> bool:
-    texto = message.lower()
+    texto = message.lower().strip()
+    if _EXACT_ESCALATION_REGEX.match(texto):
+        return True
     return any(re.search(p, texto) for p in _HANDOFF_PATTERNS)
+
+
+def has_case_status_signals(message: str) -> bool:
+    return bool(_CONSULTA_CASO_REGEX.search(message.strip()))
 
 
 def detectar_perfil_lexico_heuristico(message: str, perfil_previo: Optional[str] = None) -> str:
@@ -182,26 +205,37 @@ def route(
     pending_emotions: Optional[List[Dict]] = None,
     historial_conversacion: Optional[List[Dict]] = None,
 ) -> RoutingDecision:
-    patron_sensible = detectar_solicitud_sensible(message)
+    msg_clean = message.strip()
+
+    # 1. Salida de escalamiento garantizada inmediata (sin pasar por LLM)
+    if _EXACT_ESCALATION_REGEX.match(msg_clean) or has_handoff_signals(msg_clean):
+        return RoutingDecision(
+            intent="SOLICITUD_AGENTE",
+            perfil_lexico=detectar_perfil_lexico_heuristico(msg_clean, perfil_previo),
+            fuente="DETERMINISTA",
+        )
+
+    # 2. Consulta de estado de caso por folio o pregunta de seguimiento
+    if has_case_status_signals(msg_clean):
+        return RoutingDecision(
+            intent="CONSULTA_ESTADO_CASO",
+            perfil_lexico=detectar_perfil_lexico_heuristico(msg_clean, perfil_previo),
+            fuente="DETERMINISTA",
+        )
+
+    patron_sensible = detectar_solicitud_sensible(msg_clean)
     if patron_sensible:
         return RoutingDecision(
             intent="SOLICITUD_SENSIBLE",
-            perfil_lexico=detectar_perfil_lexico_heuristico(message, perfil_previo),
+            perfil_lexico=detectar_perfil_lexico_heuristico(msg_clean, perfil_previo),
             fuente="DETERMINISTA",
             patron_sensible=patron_sensible,
         )
 
-    if has_handoff_signals(message):
-        return RoutingDecision(
-            intent="SOLICITUD_AGENTE",
-            perfil_lexico=detectar_perfil_lexico_heuristico(message, perfil_previo),
-            fuente="DETERMINISTA",
-        )
-
-    if has_billing_signals(message):
+    if has_billing_signals(msg_clean):
         return RoutingDecision(
             intent="FACTURACION",
-            perfil_lexico=detectar_perfil_lexico_heuristico(message, perfil_previo),
+            perfil_lexico=detectar_perfil_lexico_heuristico(msg_clean, perfil_previo),
             fuente="DETERMINISTA",
         )
 

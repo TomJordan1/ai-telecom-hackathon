@@ -129,12 +129,14 @@ def _build_handoff_context(
     confidence_score: Optional[int] = None,
     components_invoked: Optional[List[str]] = None,
     canal_preferido: str = "CHAT",
+    folio: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Empaqueta el contexto enriquecido que un agente humano necesita para continuar
     la conversación sin que el cliente tenga que repetir todo desde cero (PoC de integración CRM).
     """
     contexto = {
+        "folio": folio,
         "motivo": motivo,
         "user_id": request.user_id,
         "ultimo_mensaje": request.message,
@@ -409,7 +411,13 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     patron_en_gestion = (
         ultimo_turno_lucia.get("intent") if ultimo_turno_lucia else None
     )
-    if sesion_activa and patron_en_gestion in PATRONES_SENSIBLES and not has_billing_signals(request.message):
+    if (
+        sesion_activa
+        and patron_en_gestion in PATRONES_SENSIBLES
+        and not has_billing_signals(request.message)
+        and not has_handoff_signals(request.message)
+        and not has_case_status_signals(request.message)
+    ):
         response = ChatResponse(
             session_id=request.session_id,
             intent_category=patron_en_gestion,
@@ -469,16 +477,86 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     # 2. Si no, se deriva a un humano Y se registra en cuarentena con ese
     #    patrón. Así, cuando un agente la valide desde el panel, la próxima
     #    consulta de cancelación ya no vuelve a derivar.
+    # Paso 0.5: Consulta conversacional de estado de caso / folio
+    if decision.es_consulta_caso:
+        components_invoked.append("case_status_tracker")
+        match_folio = re.search(r"CASO-[A-Z0-9]{4,8}", request.message, re.IGNORECASE)
+        folio_query = match_folio.group(0).upper() if match_folio else None
+
+        info_caso = crud.consultar_estado_caso(
+            db, session_id=request.session_id, user_id=request.user_id, folio=folio_query
+        )
+
+        if info_caso:
+            texto_estado = (
+                f"📋 **Estado de tu caso [{info_caso['folio']}]:**\n\n"
+                f"• **Situación actual:** {info_caso['estado']}\n"
+                f"• **Detalle:** {info_caso['mensaje_estado']}\n"
+                f"• **Fecha de registro:** {info_caso['fecha']}\n\n"
+                f"Tu caso está completamente registrado y protegido por la garantía de no repetición. "
+                f"Si necesitas agregar información o consultar otro tema, aquí sigo atenta. 😊"
+            )
+            response = ChatResponse(
+                session_id=request.session_id,
+                intent_category="CONSULTA_ESTADO_CASO",
+                sentiment_score=historial.score_sentimiento,
+                requires_human_intervention=False,
+                confidence_score=100,
+                confidence_reasons=["Consulta directa de estado de caso en la base de datos."],
+                folio=info_caso["folio"],
+                messages=[MessageChunk(text=texto_estado, type="explanation")],
+                personality_metadata=PersonalityMetadata(
+                    lucia_tone=persona.tono_para_metadata(perfil_lexico)
+                ),
+            )
+        else:
+            texto_no_caso = (
+                "He revisado tu cuenta y en este momento no tienes ningún caso o trámite pendiente de atención. "
+                "Todas tus consultas anteriores están al día. ¿Hay algo puntual de tu recibo que desees revisar? 😊"
+            )
+            response = ChatResponse(
+                session_id=request.session_id,
+                intent_category="CONSULTA_ESTADO_CASO",
+                sentiment_score=historial.score_sentimiento,
+                requires_human_intervention=False,
+                confidence_score=95,
+                confidence_reasons=["Verificación en base de datos: sin casos pendientes para el usuario."],
+                messages=[MessageChunk(text=texto_no_caso, type="explanation")],
+                personality_metadata=PersonalityMetadata(
+                    lucia_tone=persona.tono_para_metadata(perfil_lexico)
+                ),
+            )
+        _registrar_auditoria(
+            db, request.session_id, started_at, response.intent_category, components_invoked,
+            confidence_score=response.confidence_score,
+        )
+        return _finalizar(db, request, response)
+
+    # Paso 0.6: Solicitudes estructurales sensibles
+    # Regla de negocio inquebrantable: cancelaciones, bajas, portabilidad y nuevas
+    # líneas requieren verificación de identidad y proceso regulatorio formal.
+    # Lucía NUNCA intenta retener al cliente, renegociar el plan ni resolver estas
+    # solicitudes por su cuenta.
+    #
+    # Dos caminos según el banco de conocimiento:
+    # 1. Si existe una solución VALIDADA para este tipo de solicitud sensible
+    #    (ej: un asesor ya homologó cómo transferir cancelaciones con contexto),
+    #    se aplica esa solución aprobada con confianza 99% y caso_validado=True.
+    # 2. Si NO existe todavía en la base de casos, se deriva de inmediato con
+    #    confianza 80% y se registra en cuarentena para que un agente valide el
+    #    patrón. Así, cuando un agente la valide desde el panel, la próxima
+    #    consulta de cancelación ya no vuelve a derivar.
     if decision.es_solicitud_sensible:
         components_invoked.append("case_matcher_sensible")
         caso_sensible = crud.get_caso_conocido(db, decision.patron_sensible)
+        folio_sensible = crud.generar_folio()
 
         if caso_sensible:
             crud.increment_caso_aplicado(db, caso_sensible.id)
             solucion = caso_sensible.solucion_estructurada or {}
             texto = solucion.get("texto") or (
-                "Ya tengo el proceso verificado para esto. Un asesor lo revisará "
-                "contigo para completarlo con tus datos. 🙏"
+                f"Ya tengo el proceso verificado para esto. Tu caso quedó registrado con el folio **{folio_sensible}** "
+                "y un asesor lo revisará contigo con todo el contexto listo. 🙏"
             )
             response = ChatResponse(
                 session_id=request.session_id,
@@ -486,14 +564,18 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
                 sentiment_score=historial.score_sentimiento,
                 requires_human_intervention=True,
                 confidence_score=99,
+                confidence_reasons=["Proceso validado previamente en banco de soluciones para trámite regulado."],
                 caso_validado=True,
+                folio=folio_sensible,
                 messages=[MessageChunk(text=texto, type="explanation")],
                 personality_metadata=PersonalityMetadata(
                     lucia_tone=persona.tono_para_metadata(perfil_lexico)
                 ),
                 handoff_context=_build_handoff_context(
                     request, historial, historial_conversacion,
-                    motivo=f"SOLICITUD_SENSIBLE_{decision.patron_sensible}"
+                    motivo=f"SOLICITUD_SENSIBLE_{decision.patron_sensible}",
+                    folio=folio_sensible,
+                    components_invoked=components_invoked,
                 ),
             )
             _registrar_auditoria(
@@ -506,6 +588,11 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         # Caso nuevo: se deriva Y se registra en cuarentena para que un agente
         # lo valide y quede disponible para la próxima consulta similar.
         reasons_sensible = ["Trámite sensible regulado: requiere validación formal por un asesor."]
+        texto_sensible = (
+            f"Entiendo tu solicitud. Tu caso quedó registrado con el folio **{folio_sensible}** "
+            f"y ya envié a tu asesor el expediente con todo el detalle de tu recibo y lo que acabamos de revisar, "
+            f"así que no vas a tener que repetir nada. En un momento un asesor continuará contigo directamente. 🙏"
+        )
         response = ChatResponse(
             session_id=request.session_id,
             intent_category=decision.patron_sensible,
@@ -514,9 +601,10 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             confidence_score=80,
             confidence_reasons=reasons_sensible,
             caso_validado=False,
+            folio=folio_sensible,
             messages=[
                 MessageChunk(
-                    text="Entiendo tu solicitud. Ya envié a tu asesor el expediente con todo el detalle de tu recibo y lo que acabamos de revisar, así que no vas a tener que repetir nada. En un momento un asesor continuará contigo directamente. 🙏",
+                    text=texto_sensible,
                     type="explanation",
                 )
             ],
@@ -529,6 +617,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
                 confidence_reasons=reasons_sensible,
                 confidence_score=80,
                 components_invoked=components_invoked,
+                folio=folio_sensible,
             ),
         )
         register_new_case(
@@ -540,6 +629,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
                 "messages": [m.model_dump() for m in response.messages],
             },
             uncertainty_score=0.5,
+            folio=folio_sensible,
         )
         _registrar_auditoria(
             db, request.session_id, started_at, response.intent_category, components_invoked,
@@ -552,6 +642,12 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     # ni se re-explica facturación. Se deriva de inmediato con contexto completo.
     if decision.es_solicitud_agente:
         reasons_agente = ["Solicitud explícita del cliente para comunicarse con un asesor."]
+        folio_agente = crud.generar_folio()
+        texto_agente = (
+            f"Entendido. Tu caso quedó registrado con el folio **{folio_agente}** "
+            f"y ya le compartí al asesor el expediente con el detalle de tus recibos y lo que conversamos "
+            f"para que no tengas que repetir nada. Un agente humano continuará contigo de inmediato. 🙏"
+        )
         response = ChatResponse(
             session_id=request.session_id,
             intent_category="SOLICITUD_AGENTE",
@@ -559,9 +655,10 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             requires_human_intervention=True,
             confidence_score=99,
             confidence_reasons=reasons_agente,
+            folio=folio_agente,
             messages=[
                 MessageChunk(
-                    text="Entendido. Ya le compartí al asesor el expediente con el detalle de tus recibos y lo que conversamos para que no tengas que repetir nada. Un agente humano continuará contigo de inmediato. 🙏",
+                    text=texto_agente,
                     type="explanation",
                 )
             ],
@@ -574,6 +671,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
                 confidence_reasons=reasons_agente,
                 confidence_score=99,
                 components_invoked=components_invoked,
+                folio=folio_agente,
             ),
         )
         _registrar_auditoria(
@@ -744,6 +842,17 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     es_loop_sin_resolver = _detectar_loop_sin_resolver(historial_conversacion, request.message)
     if es_loop_sin_resolver and (fact_payload.get("detected_event") in ("INCREMENTO_OTROS", "CONSULTA_GENERAL") or uncertainty_score >= 0.5):
         reasons_loop = ["Límite anti-loop de seguridad alcanzado: derivación proactiva con expediente preparado."]
+        folio_loop = crud.generar_folio()
+
+        monto_act = fact_payload.get("current_bill_amount")
+        ciclo_act = fact_payload.get("current_cycle")
+        acuse_loop = f"He verificado tu consulta sobre el recibo de {ciclo_act or 'este ciclo'} (S/ {monto_act:.2f}). " if monto_act else "He revisado el detalle de tu recibo. "
+
+        texto_loop = (
+            f"{acuse_loop}Para asegurarme de que recibas una solución exacta y evitarte más demoras, "
+            f"ya transferí tu caso a un asesor especializado bajo el folio **{folio_loop}**, con todo el expediente "
+            f"de tu recibo y lo que conversamos para que no tengas que repetir nada. 🙏"
+        )
         response = ChatResponse(
             session_id=request.session_id,
             intent_category="LIMITE_LOOP_DERIVACION_HUMANA",
@@ -751,9 +860,10 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             requires_human_intervention=True,
             confidence_score=75,
             confidence_reasons=reasons_loop,
+            folio=folio_loop,
             messages=[
                 MessageChunk(
-                    text="He revisado el detalle de tu factura, pero para asegurarme de que recibas una solución exacta y evitarte más demoras, ya transferí tu caso a un asesor especializado con todo el expediente de tu recibo y lo que conversamos para que no tengas que repetir nada. 🙏",
+                    text=texto_loop,
                     type="explanation"
                 )
             ],
@@ -765,6 +875,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
                 motivo="LIMITE_LOOP_INTENTOS_EXCEDIDOS", fact_payload=fact_payload,
                 confidence_reasons=reasons_loop, confidence_score=75,
                 components_invoked=components_invoked,
+                folio=folio_loop,
             ),
         )
         _adjuntar_desgloses(response, fact_payload)
@@ -784,10 +895,21 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             conf_score_calc,
             confidence_reasons,
         )
+        folio_unc = crud.generar_folio()
+
+        monto_act = fact_payload.get("current_bill_amount")
+        var_amt = fact_payload.get("variation_amount")
+        ciclo_act = fact_payload.get("current_cycle")
+        if monto_act is not None and var_amt is not None:
+            signo = "+" if var_amt > 0 else ""
+            acuse_recibo = f"Entiendo tu consulta sobre tu recibo de {ciclo_act or 'este periodo'} por S/ {monto_act:.2f} ({signo}S/ {var_amt:.2f} de variación). "
+        else:
+            acuse_recibo = "Entiendo tu consulta sobre los cobros de tu recibo. "
+
         texto_handoff = (
-            f"{verbalizacion}\n\n"
-            f"Ya envié a tu asesor el expediente con todo el detalle de tu recibo y lo que acabamos "
-            f"de revisar, así que no vas a tener que repetir nada. 🙏"
+            f"{acuse_recibo}{verbalizacion}\n\n"
+            f"Tu caso quedó registrado con el folio **{folio_unc}** y ya envié a tu asesor el expediente "
+            f"con todo el detalle de tu recibo y lo que acabamos de revisar, así que no vas a tener que repetir nada. 🙏"
         )
         response = ChatResponse(
             session_id=request.session_id,
@@ -796,6 +918,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             requires_human_intervention=True,
             confidence_score=conf_score_calc,
             confidence_reasons=confidence_reasons,
+            folio=folio_unc,
             messages=[
                 MessageChunk(
                     text=texto_handoff,
@@ -810,13 +933,9 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
                 motivo="INCERTIDUMBRE_ALTA", fact_payload=fact_payload,
                 confidence_reasons=confidence_reasons, confidence_score=conf_score_calc,
                 components_invoked=components_invoked,
+                folio=folio_unc,
             ),
-        )
         _adjuntar_desgloses(response, fact_payload)
-        # Sin este registro, cualquier caso que derivara por incertidumbre alta
-        # (justo los casos genuinamente difíciles) desaparecía sin dejar rastro
-        # en el panel de cuarentena. No hay banco de soluciones si el caso más
-        # necesitado de revisión humana nunca llega a la cola de validación.
         eventos_ignorados = ("SIN_CAMBIOS", "NUEVO_CLIENTE", "CONSULTA_GENERAL")
         if not caso_match and fact_payload.get("detected_event") not in eventos_ignorados:
             solucion_serializada = {
@@ -830,6 +949,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
                 fact_payload=fact_payload_con_contexto,
                 solucion_propuesta=solucion_serializada,
                 uncertainty_score=uncertainty_score,
+                folio=folio_unc,
             )
         _registrar_auditoria(
             db, request.session_id, started_at, response.intent_category, components_invoked,

@@ -84,6 +84,7 @@ class CuarentenaCasos(Base):
     __tablename__ = "cuarentena_casos"
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    folio = Column(String(30), index=True, nullable=True)
     session_id = Column(String, index=True)
     patron_detectado = Column(String)
     evidencias = Column(JSON)   # Deterministic Fact Payload completo

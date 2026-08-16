@@ -159,4 +159,8 @@ class ChatResponse(BaseModel):
     )
     compliance_triggered: bool = False
     en_atencion_humana: bool = False
+    folio: Optional[str] = Field(
+        None,
+        description="Folio corto único (ej: CASO-8F3A) generado cuando el caso entra en cuarentena o se deriva a asesor."
+    )
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
