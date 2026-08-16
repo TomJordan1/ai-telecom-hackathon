@@ -114,8 +114,6 @@ def _generate_mock_response(
 ) -> ChatResponse:
     """Fallback if no API key is provided."""
     intent_category = deterministic_payload.get("detected_event", "CONSULTA_GENERAL")
-    if "error" in deterministic_payload:
-        intent_category = "NUEVO_CLIENTE"
     
     messages = []
     

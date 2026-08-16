@@ -28,11 +28,12 @@ def calculate_uncertainty_with_reasons(
         reasons.append("Sin caso idéntico en el banco de soluciones (caso nuevo en validación).")
 
     # 2. Hay recibos suficientes para calcular ΔM (al menos 2)
+    es_visitante = fact_payload.get("detected_event") == "CONSULTA_GENERAL" and fact_payload.get("current_bill") is None
     if fact_payload.get("previous_bills") and len(fact_payload["previous_bills"]) >= 1:
         score -= 0.15
         reasons.append("Historial de recibos verificado disponible para comparación mensual (+15% certeza).")
     else:
-        if "error" not in fact_payload:
+        if not es_visitante:
             reasons.append("Historial previo limitado (primer ciclo o sin recibos comparativos).")
 
     # 3. El evento detectado no es ambiguo
@@ -67,8 +68,8 @@ def calculate_uncertainty_with_reasons(
         elif evento == "SIN_CAMBIOS":
             reasons.append("Sin variaciones monetarias en el período analizado.")
 
-    # 6. No hay datos de recibos
-    if "error" in fact_payload:
+    # 6. No hay datos de recibos (visitante sin cuenta vinculada)
+    if es_visitante:
         score += 0.30
         reasons.append("No se registran recibos facturados para la cuenta consultada (+30% incertidumbre).")
 
