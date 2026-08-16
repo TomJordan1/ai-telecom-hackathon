@@ -934,7 +934,8 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
                 confidence_reasons=confidence_reasons, confidence_score=conf_score_calc,
                 components_invoked=components_invoked,
                 folio=folio_unc,
-            ),
+            )
+        )
         _adjuntar_desgloses(response, fact_payload)
         eventos_ignorados = ("SIN_CAMBIOS", "NUEVO_CLIENTE", "CONSULTA_GENERAL")
         if not caso_match and fact_payload.get("detected_event") not in eventos_ignorados:
