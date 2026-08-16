@@ -223,6 +223,8 @@ def _finalizar(
     crud.append_turno_conversacion(
         db, request.session_id, "lucia", _texto_completo(response), response.intent_category
     )
+    if response.requires_human_intervention:
+        crud.update_historial(db, request.session_id, {"en_atencion_humana": True})
     return response
 
 
@@ -933,9 +935,9 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
                 components_invoked=components_invoked,
                 folio=folio_unc,
             ),
-        )
         _adjuntar_desgloses(response, fact_payload)
-        if not caso_match:
+        eventos_ignorados = ("SIN_CAMBIOS", "NUEVO_CLIENTE", "CONSULTA_GENERAL")
+        if not caso_match and fact_payload.get("detected_event") not in eventos_ignorados:
             solucion_serializada = {
                 "intent_category": response.intent_category,
                 "messages": [m.model_dump() for m in response.messages],
@@ -1084,7 +1086,8 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     # Paso 7.5: Si era un caso nuevo (sin match), registrar en cuarentena.
     # Se incluye user_message en las evidencias para que en el panel se vea
     # qué preguntó el usuario, no solo el patrón técnico.
-    if not caso_match:
+    eventos_ignorados = ("SIN_CAMBIOS", "NUEVO_CLIENTE", "CONSULTA_GENERAL")
+    if not caso_match and fact_payload.get("detected_event") not in eventos_ignorados:
         solucion_serializada = {
             "intent_category": response.intent_category,
             "messages": [m.model_dump() for m in response.messages]

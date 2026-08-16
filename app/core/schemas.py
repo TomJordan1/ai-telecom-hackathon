@@ -158,6 +158,7 @@ class ChatResponse(BaseModel):
                     "en vez de generarse desde cero. Es la señal visible del banco de conocimiento."
     )
     compliance_triggered: bool = False
+    en_atencion_humana: bool = False
     folio: Optional[str] = Field(
         None,
         description="Folio corto único (ej: CASO-8F3A) generado cuando el caso entra en cuarentena o se deriva a asesor."

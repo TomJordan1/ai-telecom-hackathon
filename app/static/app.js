@@ -770,6 +770,10 @@ async function sendMessage() {
             addHandoffBanner(data.intent_category);
         }
 
+        if (data.en_atencion_humana) {
+            startPollingChat();
+        }
+
         // Actualizar chips de acuerdo al contexto
         if (isVisitor()) {
             renderVisitorChips();
@@ -780,6 +784,69 @@ async function sendMessage() {
     } catch (e) {
         hideTyping();
         addBotMessage("Ocurrió un error de conexión al procesar tu consulta. Por favor intenta de nuevo.");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Polling para Chat en Tiempo Real con Agente (Handoff)
+// ---------------------------------------------------------------------------
+
+let chatPollInterval = null;
+let lastHistoryLength = 0;
+
+function startPollingChat() {
+    if (chatPollInterval) return;
+    lastHistoryLength = 0; // Sincroniza en la primera llamada
+    chatPollInterval = setInterval(pollChatForAgent, 3000);
+}
+
+function stopPollingChat() {
+    if (chatPollInterval) {
+        clearInterval(chatPollInterval);
+        chatPollInterval = null;
+    }
+}
+
+async function pollChatForAgent() {
+    if (!sessionId) return;
+    try {
+        const res = await fetch(`/api/v1/admin/handoff/${sessionId}/historial?t=${Date.now()}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const conv = data.historial_conversacion || [];
+        
+        if (lastHistoryLength === 0 || lastHistoryLength < conv.length - 50) {
+            // Inicialización segura si es la primera vez (evita spam de mensajes viejos)
+            lastHistoryLength = conv.length;
+        } else if (conv.length > lastHistoryLength) {
+            const newMsgs = conv.slice(lastHistoryLength);
+            newMsgs.forEach(m => {
+                if (m.role === 'lucia' && m.intent === 'AGENTE_HUMANO') {
+                    // Mensaje del agente humano
+                    const wrap = addBotMessage(m.text, 'normal');
+                    wrap.querySelector('.bubble').style.background = '#e0f2fe';
+                    wrap.querySelector('.bubble').style.color = '#0369a1';
+                    wrap.querySelector('.bubble').style.border = '1px solid #bae6fd';
+                    const avatar = wrap.parentNode.querySelector('.bot-avatar-mini');
+                    if(avatar) {
+                        avatar.textContent = '👤';
+                        avatar.style.background = '#0284c7';
+                    }
+                } else if (m.role === 'lucia') {
+                    // Mensaje de Lucía (por si acaso envía algo)
+                    addBotMessage(m.text, 'normal');
+                }
+                // Si role == 'user', fue el mensaje que el usuario acaba de enviar, no lo duplicamos.
+            });
+            lastHistoryLength = conv.length;
+        }
+
+        if (!data.en_atencion_humana) {
+            stopPollingChat();
+            addBotMessage("🤖 **Lucía ha retomado la conversación.** ¿En qué más te puedo ayudar?", 'normal');
+        }
+    } catch(e) {
+        // Silencioso
     }
 }
 

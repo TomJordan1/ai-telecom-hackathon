@@ -1,6 +1,6 @@
 <div align="center">
 
-# Lucía — Copiloto de Transparencia de Facturación
+# Luzmila — Copiloto de Transparencia de Facturación
 
 *Asistente conversacional inteligente que explica variaciones en recibos de telecomunicaciones con desglose exacto al céntimo y banco de soluciones validadas por asesores.*
 

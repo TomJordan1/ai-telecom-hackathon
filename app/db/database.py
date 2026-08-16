@@ -62,6 +62,10 @@ def run_lightweight_migrations():
         _agregar_columna(
             "historial_interacciones", "historial_conversacion", f"JSON DEFAULT {default_json}"
         )
+    if "en_atencion_humana" not in columnas:
+        _agregar_columna(
+            "historial_interacciones", "en_atencion_humana", f"BOOLEAN DEFAULT {default_false}"
+        )
 
     if "audit_log" in inspector.get_table_names():
         columnas_audit = {c["name"] for c in inspector.get_columns("audit_log")}

@@ -67,10 +67,8 @@ async function loadHandoffQueue() {
         list.innerHTML = data.casos.map(renderHandoffCard).join("");
 
         list.querySelectorAll("[data-atender]").forEach((btn) => {
-            btn.addEventListener("click", async () => {
-                await apiPost(`/admin/handoff-queue/${btn.dataset.atender}/atender`);
-                showToast("Caso marcado como atendido");
-                loadHandoffQueue();
+            btn.addEventListener("click", () => {
+                openChatModal(btn.dataset.session);
             });
         });
     } catch (e) {
@@ -124,11 +122,88 @@ ${reasons}
 <strong>Historial reciente verificado:</strong>
 ${historial}
         </div>
-        ${!caso.atendido ? `<div class="card-actions"><button class="btn-attend" data-atender="${caso.id}">✓ Marcar como atendido</button></div>` : ""}
+        ${!caso.atendido ? `<div class="card-actions"><button class="btn-attend" data-atender="${caso.id}" data-session="${caso.session_id}">💬 Abrir Chat</button></div>` : ""}
     </div>`;
 }
 
 document.getElementById("filtro-pendientes").addEventListener("change", loadHandoffQueue);
+
+// --- Lógica del Modal de Chat (Handoff) ---
+let currentChatSessionId = null;
+let chatRefreshInterval = null;
+
+async function openChatModal(sessionId) {
+    currentChatSessionId = sessionId;
+    document.getElementById("chat-session-id").textContent = sessionId;
+    document.getElementById("chat-modal").style.display = "flex";
+    await loadChatHistory();
+    chatRefreshInterval = setInterval(loadChatHistory, 3000); // Auto-refresh cada 3s
+}
+
+async function loadChatHistory() {
+    if (!currentChatSessionId) return;
+    const historyDiv = document.getElementById("chat-history");
+    try {
+        const data = await apiGet(`/admin/handoff/${currentChatSessionId}/historial?t=${Date.now()}`);
+        historyDiv.innerHTML = "";
+        const conv = data.historial_conversacion || [];
+        conv.forEach(t => {
+            const bubble = document.createElement("div");
+            bubble.className = `chat-bubble ${t.role}`;
+            if(t.role === "lucia" && t.intent === "AGENTE_HUMANO") bubble.className = "chat-bubble agent";
+            bubble.textContent = t.text;
+            historyDiv.appendChild(bubble);
+        });
+        historyDiv.scrollTop = historyDiv.scrollHeight;
+    } catch (e) {
+        if (!historyDiv.innerHTML) historyDiv.innerHTML = `<p>Error: ${e.message}</p>`;
+    }
+}
+
+document.getElementById("btn-close-chat").addEventListener("click", () => {
+    document.getElementById("chat-modal").style.display = "none";
+    currentChatSessionId = null;
+    if(chatRefreshInterval) clearInterval(chatRefreshInterval);
+});
+
+document.getElementById("btn-send-chat").addEventListener("click", async () => {
+    const input = document.getElementById("chat-input");
+    const text = input.value.trim();
+    if (!text || !currentChatSessionId) return;
+    input.value = "";
+    
+    const historyDiv = document.getElementById("chat-history");
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble agent";
+    bubble.textContent = text;
+    historyDiv.appendChild(bubble);
+    historyDiv.scrollTop = historyDiv.scrollHeight;
+
+    try {
+        await apiPost(`/admin/handoff/${currentChatSessionId}/reply`, { message: text });
+    } catch(e) {
+        showToast(`Error: ${e.message}`);
+    }
+});
+
+document.getElementById("chat-input").addEventListener("keypress", (e) => {
+    if (e.key === "Enter") document.getElementById("btn-send-chat").click();
+});
+
+document.getElementById("btn-resolve-chat").addEventListener("click", async () => {
+    if (!currentChatSessionId) return;
+    if (!confirm("¿Seguro que el caso está resuelto? El bot volverá a responder a partir del próximo mensaje.")) return;
+    try {
+        await apiPost(`/admin/handoff/${currentChatSessionId}/resolve`);
+        showToast("Caso cerrado y control devuelto a Lucía.");
+        document.getElementById("chat-modal").style.display = "none";
+        currentChatSessionId = null;
+        if(chatRefreshInterval) clearInterval(chatRefreshInterval);
+        loadHandoffQueue();
+    } catch(e) {
+        showToast(`Error: ${e.message}`);
+    }
+});
 
 // ---------------------------------------------------------------------------
 // Cuarentena de casos

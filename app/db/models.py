@@ -43,6 +43,7 @@ class HistorialInteracciones(Base):
     score_sentimiento = Column(Integer, default=3)
     perfil_lexico_usuario = Column(String, default="CASUAL") # FORMAL, CASUAL, USO_JERGAS
     estado_resolucion = Column(Boolean, default=False)
+    en_atencion_humana = Column(Boolean, default=False) # True cuando un agente real toma el control
     historial_conversacion = Column(JSON, default=list)
     # Bitácora acotada de turnos recientes (no todo el historial, solo lo necesario
     # para dar continuidad): [{"role": "user"|"lucia", "text": "...", "intent": "..."}]
