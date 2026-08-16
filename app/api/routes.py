@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.core.schemas import ChatRequest, ChatResponse
 from app.db.database import get_db
 from app.services.orchestrator import process_message
+import traceback
 
 router = APIRouter()
 
@@ -30,4 +31,7 @@ async def process_chat(request: ChatRequest, db: Session = Depends(get_db)):
             
         return response
     except Exception as e:
+        print(f"[WEB CHAT ERROR] {type(e).__name__}: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
