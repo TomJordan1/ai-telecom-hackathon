@@ -628,7 +628,7 @@ function stopPollingChat() {
 async function pollChatForAgent() {
     if (!sessionId) return;
     try {
-        const res = await fetch(`/api/v1/admin/handoff/${sessionId}/historial`);
+        const res = await fetch(`/admin/handoff/${sessionId}/historial`);
         if (!res.ok) return;
         const data = await res.json();
         const conv = data.historial_conversacion || [];
