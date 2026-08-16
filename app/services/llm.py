@@ -248,6 +248,11 @@ def generate_response(
         - "evidence": ÚNICA Y EXCLUSIVAMENTE para desgloses numéricos puntuales de montos, cargos específicos, pagos o líneas técnicas de facturación (ej: "Recibo actual (2026-07-21): S/ 39.90" o desglose de conceptos facturados con sus cifras).
         NUNCA clasifiques como "evidence" textos de conclusión, frases tranquilizadoras, despedidas, recomendaciones o textos conversacionales. Si no contiene un desglose numérico o detalle técnico de pagos/planes/recibos, su tipo DEBE ser "explanation".
 
+        REGLA DE CONCISIÓN VISUAL (CRÍTICA):
+        La interfaz del usuario YA MUESTRA infografías y gráficos detallados con el desglose matemático exacto de su recibo y variaciones.
+        Por lo tanto, tu respuesta textual DEBE SER MUY BREVE. Limítate a explicar el motivo principal en una o dos oraciones cortas (ej: "El aumento se debe a un cambio de plan a mitad de mes."). 
+        NUNCA detalles los montos individuales, céntimos ni sumatorias en el texto, deja que las gráficas hablen por sí solas.
+
         HISTORIAL RECIENTE DE LA CONVERSACIÓN:
         {historial_conversacion}
 
