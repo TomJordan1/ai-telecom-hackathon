@@ -81,9 +81,15 @@ async function loadHandoffQueue() {
 function renderHandoffCard(caso) {
     const ctx = caso.handoff_context || {};
     const emociones = (ctx.comentarios_emocionales_pendientes || []).join("; ") || "Ninguno";
+    const canalIconos = { "CHAT": "💬 Chat Web", "LLAMADA": "📞 Llamada Telefónica", "WHATSAPP": "📲 WhatsApp" };
+    const canalPreferido = canalIconos[ctx.canal_preferido] || ctx.canal_preferido || "💬 Chat Web";
+    const reasons = (ctx.confidence_reasons || []).map(r => `• ${r}`).join("\n") || "• Consulta en evaluación por asesor";
+    const auditTrail = (ctx.audit_trail_components || []).join(" ➔ ") || "deterministic_engine";
+
     const evidencia = ctx.evidencia_determinista
-        ? `Evento: ${ctx.evidencia_determinista.detected_event || "—"} | Variación: S/ ${ctx.evidencia_determinista.variation_amount ?? "—"}`
+        ? `Evento: ${ctx.evidencia_determinista.detected_event || "—"} | Recibo: S/ ${ctx.evidencia_determinista.current_bill_amount ?? "—"} | Variación: S/ ${ctx.evidencia_determinista.variation_amount ?? "—"}`
         : "Sin evidencia de facturación asociada.";
+
     const historial = (ctx.historial_reciente || [])
         .map((t) => `${t.role === "user" ? "Usuario" : "Lucía"}: ${t.text}`)
         .join("\n") || "Sin turnos previos registrados.";
@@ -95,19 +101,27 @@ function renderHandoffCard(caso) {
                 <div class="card-title">Sesión: ${caso.session_id}</div>
                 <div class="card-subtitle">${caso.intent_category} · ${fmtFecha(caso.fecha)}</div>
             </div>
-            <span class="badge ${caso.atendido ? "badge-done" : "badge-pending"}">
-                ${caso.atendido ? "Atendido" : "Pendiente"}
-            </span>
+            <div style="display:flex;gap:6px;align-items:center;">
+                <span class="badge badge-done" style="background:#e0e7ff;color:#3730a3;border:1px solid #c7d2fe;">${canalPreferido}</span>
+                <span class="badge ${caso.atendido ? "badge-done" : "badge-pending"}">
+                    ${caso.atendido ? "Atendido" : "Pendiente"}
+                </span>
+            </div>
         </div>
         <div class="card-details">
-Motivo: ${ctx.motivo || "—"}
-Usuario: ${ctx.user_id || "—"}
-Último mensaje: "${ctx.ultimo_mensaje || "—"}"
-Sentimiento: ${ctx.sentimiento_score ?? "—"}/5  ·  Perfil: ${ctx.perfil_lexico || "—"}
-${evidencia}
-Comentarios emocionales pendientes: ${emociones}
+<strong>Canal de contacto solicitado:</strong> ${canalPreferido}
+<strong>Garantía al cliente:</strong> ✓ Se confirmó al cliente que no tendrá que repetir su caso.
+<strong>Motivo de derivación:</strong> ${ctx.motivo || "—"}
+<strong>Usuario:</strong> ${ctx.user_id || "—"}
+<strong>Último mensaje:</strong> "${ctx.ultimo_mensaje || "—"}"
+<strong>Sentimiento:</strong> ${ctx.sentimiento_score ?? "—"}/5  ·  <strong>Perfil:</strong> ${ctx.perfil_lexico || "—"}
+<strong>Facturación:</strong> ${evidencia}
+<strong>Trazabilidad de Componentes:</strong> ${auditTrail}
 
-Historial reciente:
+<strong>Fundamentos de Incertidumbre y Certeza:</strong>
+${reasons}
+
+<strong>Historial reciente verificado:</strong>
 ${historial}
         </div>
         ${!caso.atendido ? `<div class="card-actions"><button class="btn-attend" data-atender="${caso.id}">✓ Marcar como atendido</button></div>` : ""}

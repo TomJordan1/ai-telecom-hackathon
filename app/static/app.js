@@ -546,7 +546,28 @@ function addNextBestActions(actions) {
 }
 
 function handleNextActionClick(action) {
-    if (action.id === 'PAY_BILL') {
+    if (action.id === 'CANAL_CHAT') {
+        fetch('/api/v1/handoff-channel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, canal_preferido: 'CHAT' })
+        }).catch(() => {});
+        addBotMessage("¡Perfecto! Tu asesor se conectará directamente por este chat con todo tu expediente listo para no repetir nada. 💬");
+    } else if (action.id === 'CANAL_LLAMADA') {
+        fetch('/api/v1/handoff-channel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, canal_preferido: 'LLAMADA' })
+        }).catch(() => {});
+        addBotMessage("¡Entendido! Hemos programado que un asesor te llame a tu número de contacto con todo el detalle de tu recibo preparado. 📞");
+    } else if (action.id === 'CANAL_WHATSAPP') {
+        fetch('/api/v1/handoff-channel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, canal_preferido: 'WHATSAPP' })
+        }).catch(() => {});
+        addBotMessage("¡Listo! Tu asesor te contactará al WhatsApp vinculado con todo el contexto de tu consulta para no hacerte perder tiempo. 📲");
+    } else if (action.id === 'PAY_BILL') {
         showPaymentModal(action.payload);
     } else if (action.id === 'VIEW_BREAKDOWN') {
         messageInput.value = '¿Puedes mostrarme el desglose de conceptos de mi recibo?';

@@ -77,7 +77,9 @@ El sistema está estructurado en cinco capas desacopladas que garantizan trazabi
 ## Características
 
 - **Modo Auditor al Céntimo**: Desplegable interactivo en cada respuesta que muestra la ecuación exacta y los códigos oficiales del CSV (`CHARGE_CODE_ID` y `CHARGE_CODE_DESC`).
-- **Confianza Visible con Motivos**: Explicación clara de por qué una respuesta tiene alta certeza o por qué se encuentra en validación.
+- **Verbalización de Certeza y Límites**: Lucía explica en lenguaje natural qué conoce con certeza matemática y cuál es el límite de los datos disponibles, además de mostrar los motivos de certeza en la interfaz.
+- **Expediente de Handoff Enriquecido (PoC CRM)**: Preserva el historial completo, desglose verificado, componentes de auditoría y garantiza al cliente que no tendrá que repetir su caso.
+- **Control y Elección de Canal en Derivación**: Opciones interactivas para que el cliente elija si prefiere continuar por Chat Web, Llamada Telefónica o WhatsApp.
 - **Drill-Down Conversacional**: Capacidad de preguntar por conceptos y cifras específicas dentro del desglose (ej: *"¿y ese cargo de S/ 12.90 qué es?"*).
 - **Matching Semántico Vectorial**: Búsqueda por similitud coseno de embeddings sobre el banco de soluciones validadas por asesores.
 - **Límite Duro Anti-Loop**: Transferencia automática e inmediata a un agente humano con expediente tras 2 intentos no resueltos.
@@ -85,11 +87,7 @@ El sistema está estructurado en cinco capas desacopladas que garantizan trazabi
 - **Salvaguardas Comerciales Anti-Alucinación**: La recomendación de optimización de planes solo se activa cuando se cumplen 4 condiciones simultáneas y existe un plan verificado en el catálogo con mejora tangible de tarifa o capacidad.
 - **Alertas Proactivas de Vencimiento**: Identifica contratos y promociones por expirar en los próximos ciclos, calculando el impacto financiero anticipado.
 - **Memoria Contextual y Emocional**: Mantiene bitácora de conversación y detecta carga emocional con caducidad programada.
-- **Panel de Administración**: Gestión visual de cola de atención humana, bandeja de cuarentena, repositorio de casos aprobados y ejecutor de alertas proactivas.
-- **Salvaguardas Comerciales Anti-Alucinación**: La recomendación de optimización de planes solo se activa cuando se cumplen 4 condiciones simultáneas y existe un plan verificado en el catálogo con mejora tangible de tarifa o capacidad.
-- **Alertas Proactivas de Vencimiento**: Identifica contratos y promociones por expirar en los próximos ciclos, calculando el impacto financiero anticipado.
-- **Memoria Contextual y Emocional**: Mantiene bitácora de conversación de hasta 12 turnos y detecta carga emocional con caducidad programada (14 días).
-- **Panel de Administración**: Gestión visual de cola de atención humana, bandeja de cuarentena, repositorio de casos aprobados y ejecutor de alertas proactivas.
+- **Panel de Administración**: Gestión visual de cola de atención humana con expedientes enriquecidos, bandeja de cuarentena, repositorio de casos aprobados y ejecutor de alertas proactivas.
 
 ---
 

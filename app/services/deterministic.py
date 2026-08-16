@@ -340,6 +340,13 @@ def generar_auditor_breakdown(
     }
 
 
+_MARCADORES_DRILL_DOWN = re.compile(
+    r"\b(y ese cargo|y este cargo|que es ese|que es este|a que corresponde|que significa|"
+    r"expl[ií]came la l[ií]nea|detalle de la l[ií]nea|y el cobro de|y el cargo de|a que se debe el cargo)\b",
+    re.IGNORECASE,
+)
+
+
 def buscar_cargo_especifico(
     cargos_actuales: List[Dict[str, Any]],
     cargos_pasados: List[Dict[str, Any]],
@@ -361,6 +368,12 @@ def buscar_cargo_especifico(
                 montos_encontrados.append(val)
         except ValueError:
             pass
+
+    tiene_marcador_drill = bool(_MARCADORES_DRILL_DOWN.search(user_message))
+
+    # Para ser un drill-down específico debe citar un monto exacto o usar frase de drill-down
+    if not montos_encontrados and not tiene_marcador_drill:
+        return None
 
     # 2. Palabras clave de categorías de facturación
     keywords_map = {
@@ -410,8 +423,8 @@ def buscar_cargo_especifico(
         if candidato:
             break
 
-    # Si no hubo match por monto pero hay categoría buscada
-    if not candidato and categoria_buscada:
+    # Si no hubo match por monto pero hay marcador drill-down + categoría buscada
+    if not candidato and categoria_buscada and tiene_marcador_drill:
         for c in todos_los_cargos:
             if clasificar_cargo(c) == categoria_buscada and abs(_monto(c)) > 0:
                 candidato = c

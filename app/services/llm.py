@@ -290,8 +290,14 @@ def generate_response(
         responde de manera muy empática y transparente, explicando amablemente que tú sí tienes acceso
         preciso a sus recibos y que puedes ayudarle).
 
-        REGISTRO LINGÜÍSTICO DEL USUARIO: {perfil_lexico}
-        {instruccion_perfil}
+        REGLA DE VERBALIZACIÓN DE CERTEZA Y LÍMITES EN LENGUAJE NATURAL:
+        En lugar de actuar como un bot que solo entrega números, verbaliza activamente tu certeza y tus límites:
+        - Si conoces con total certeza los conceptos porque coinciden con el recibo, explícalo con claridad y firmeza.
+        - Si algún dato no está disponible (ej: acuerdos contractuales de renovación o fechas exactas de corte), di honestamente qué sabes con certeza matemática y cuál es el límite.
+        
+        REGLA DE TRANQUILIDAD EN DERIVACIÓN A ASESOR (CRÍTICA):
+        Si la respuesta contempla derivación a un asesor o gestión humana, incluye SIEMPRE la frase tranquilizadora:
+        "Ya envié a tu asesor el expediente con todo el detalle de tu recibo y lo que acabamos de revisar, así que no vas a tener que repetir nada. 🙏"
 
         SESIÓN ACTUAL: {session_id}
         """

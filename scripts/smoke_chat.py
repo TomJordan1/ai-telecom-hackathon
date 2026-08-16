@@ -23,6 +23,10 @@ import sys
 import uuid
 from pathlib import Path
 
+# Ensure UTF-8 output on Windows consoles
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 import requests
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -36,7 +40,7 @@ from app.services.deterministic import calculate_billing_facts  # noqa: E402
 # Escenario -> pregunta con la que un cliente real llegaría al bot.
 PREGUNTAS = {
     "PRORRATEO_CAMBIO_PLAN": "por que me cobraron dos montos distintos este mes?",
-    "CUOTA_EQUIPO": "que es este cargo de cuota de equipo?",
+    "CUOTA_EQUIPO": "por que me cobran cuota de equipo este mes?",
     "RECONEXION_MOROSIDAD": "por que tengo un cargo de reconexion?",
     "FIN_PROMOCION": "por que subio mi recibo este mes?",
     "CAMBIO_PLAN": "por que cambio el monto de mi plan?",

@@ -125,11 +125,14 @@ def _build_handoff_context(
     historial_conversacion: List[Dict[str, Any]],
     motivo: str,
     fact_payload: Optional[Dict[str, Any]] = None,
+    confidence_reasons: Optional[List[str]] = None,
+    confidence_score: Optional[int] = None,
+    components_invoked: Optional[List[str]] = None,
+    canal_preferido: str = "CHAT",
 ) -> Dict[str, Any]:
     """
-    Empaqueta el contexto que un agente humano necesita para continuar la
-    conversación sin que el cliente tenga que repetir todo desde cero.
-    Sin esto, derivar a un humano descarta toda la investigación ya hecha.
+    Empaqueta el contexto enriquecido que un agente humano necesita para continuar
+    la conversación sin que el cliente tenga que repetir todo desde cero (PoC de integración CRM).
     """
     contexto = {
         "motivo": motivo,
@@ -142,12 +145,20 @@ def _build_handoff_context(
             c.get("text") for c in (historial.comentarios_emocionales or [])
             if not c.get("referenciado", False)
         ],
+        "confidence_score": confidence_score,
+        "confidence_reasons": confidence_reasons or [],
+        "audit_trail_components": components_invoked or [],
+        "canal_preferido": canal_preferido,
+        "mensaje_tranquilidad_cliente": persona.MENSAJE_HANDOFF_TRANQUILIDAD,
     }
     if fact_payload:
+        current_bill = fact_payload.get("current_bill") or {}
         contexto["evidencia_determinista"] = {
             "detected_event": fact_payload.get("detected_event"),
             "evidence": fact_payload.get("evidence"),
             "variation_amount": fact_payload.get("variation_amount"),
+            "current_bill_amount": current_bill.get("amount"),
+            "auditor_breakdown": fact_payload.get("auditor_breakdown"),
         }
     return contexto
 
@@ -492,18 +503,18 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
 
         # Caso nuevo: se deriva Y se registra en cuarentena para que un agente
         # lo valide y quede disponible para la próxima consulta similar.
+        reasons_sensible = ["Trámite sensible regulado: requiere validación formal por un asesor."]
         response = ChatResponse(
             session_id=request.session_id,
             intent_category=decision.patron_sensible,
             sentiment_score=historial.score_sentimiento,
             requires_human_intervention=True,
             confidence_score=80,
+            confidence_reasons=reasons_sensible,
             caso_validado=False,
             messages=[
                 MessageChunk(
-                    text="Entiendo tu solicitud. Este tipo de trámite requiere verificación "
-                         "adicional, así que te voy a comunicar con un asesor que lo gestione "
-                         "contigo directamente. 🙏",
+                    text="Entiendo tu solicitud. Ya envié a tu asesor el expediente con todo el detalle de tu recibo y lo que acabamos de revisar, así que no vas a tener que repetir nada. En un momento un asesor continuará contigo directamente. 🙏",
                     type="explanation",
                 )
             ],
@@ -512,7 +523,10 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             ),
             handoff_context=_build_handoff_context(
                 request, historial, historial_conversacion,
-                motivo=f"SOLICITUD_SENSIBLE_{decision.patron_sensible}"
+                motivo=f"SOLICITUD_SENSIBLE_{decision.patron_sensible}",
+                confidence_reasons=reasons_sensible,
+                confidence_score=80,
+                components_invoked=components_invoked,
             ),
         )
         register_new_case(
@@ -535,16 +549,17 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     # Solicitud explícita de agente humano: máxima prioridad, no se improvisa
     # ni se re-explica facturación. Se deriva de inmediato con contexto completo.
     if decision.es_solicitud_agente:
+        reasons_agente = ["Solicitud explícita del cliente para comunicarse con un asesor."]
         response = ChatResponse(
             session_id=request.session_id,
             intent_category="SOLICITUD_AGENTE",
             sentiment_score=historial.score_sentimiento,
             requires_human_intervention=True,
             confidence_score=99,
+            confidence_reasons=reasons_agente,
             messages=[
                 MessageChunk(
-                    text="Entendido, te comunico con un asesor. En un momento un agente "
-                         "humano continuará contigo con todo el contexto de tu consulta. 🙏",
+                    text="Entendido. Ya le compartí al asesor el expediente con el detalle de tus recibos y lo que conversamos para que no tengas que repetir nada. Un agente humano continuará contigo de inmediato. 🙏",
                     type="explanation",
                 )
             ],
@@ -552,7 +567,11 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
                 lucia_tone=persona.tono_para_metadata(perfil_lexico)
             ),
             handoff_context=_build_handoff_context(
-                request, historial, historial_conversacion, motivo="SOLICITUD_EXPLICITA_USUARIO"
+                request, historial, historial_conversacion,
+                motivo="SOLICITUD_EXPLICITA_USUARIO",
+                confidence_reasons=reasons_agente,
+                confidence_score=99,
+                components_invoked=components_invoked,
             ),
         )
         _registrar_auditoria(
@@ -722,16 +741,17 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     # Paso 3.8: Límite duro anti-loop: si la sesión acumula intentos no resueltos o ambiguos
     es_loop_sin_resolver = _detectar_loop_sin_resolver(historial_conversacion, request.message)
     if es_loop_sin_resolver and (fact_payload.get("detected_event") in ("INCREMENTO_OTROS", "CONSULTA_GENERAL") or uncertainty_score >= 0.5):
+        reasons_loop = ["Límite anti-loop de seguridad alcanzado: derivación proactiva con expediente preparado."]
         response = ChatResponse(
             session_id=request.session_id,
             intent_category="LIMITE_LOOP_DERIVACION_HUMANA",
             sentiment_score=historial.score_sentimiento,
             requires_human_intervention=True,
             confidence_score=75,
-            confidence_reasons=["Límite anti-loop de seguridad alcanzado: derivación proactiva con expediente preparado."],
+            confidence_reasons=reasons_loop,
             messages=[
                 MessageChunk(
-                    text="He revisado el detalle de tu factura, pero para asegurarme de que recibas una solución exacta y evitarte más demoras, he transferido tu caso directamente a un asesor especializado con todo el historial de lo que conversamos. 🙏",
+                    text="He revisado el detalle de tu factura, pero para asegurarme de que recibas una solución exacta y evitarte más demoras, ya transferí tu caso a un asesor especializado con todo el expediente de tu recibo y lo que conversamos para que no tengas que repetir nada. 🙏",
                     type="explanation"
                 )
             ],
@@ -740,9 +760,12 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             ),
             handoff_context=_build_handoff_context(
                 request, historial, historial_conversacion,
-                motivo="LIMITE_LOOP_INTENTOS_EXCEDIDOS", fact_payload=fact_payload
+                motivo="LIMITE_LOOP_INTENTOS_EXCEDIDOS", fact_payload=fact_payload,
+                confidence_reasons=reasons_loop, confidence_score=75,
+                components_invoked=components_invoked,
             ),
         )
+        _adjuntar_desgloses(response, fact_payload)
         _registrar_auditoria(
             db, request.session_id, started_at, response.intent_category, components_invoked,
             detected_event=fact_payload.get("detected_event"), requires_human_intervention=True,
@@ -753,17 +776,27 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
 
     # Si la incertidumbre supera el umbral → handoff inmediato, con contexto completo
     if requires_handoff(uncertainty_score):
+        conf_score_calc = int((1 - uncertainty_score) * 100)
+        verbalizacion = persona.verbalizar_certeza_y_limites(
+            fact_payload.get("detected_event", "INCREMENTO_OTROS"),
+            conf_score_calc,
+            confidence_reasons,
+        )
+        texto_handoff = (
+            f"{verbalizacion}\n\n"
+            f"Ya envié a tu asesor el expediente con todo el detalle de tu recibo y lo que acabamos "
+            f"de revisar, así que no vas a tener que repetir nada. 🙏"
+        )
         response = ChatResponse(
             session_id=request.session_id,
             intent_category="DERIVACION_INCERTIDUMBRE",
             sentiment_score=historial.score_sentimiento,
             requires_human_intervention=True,
-            confidence_score=int((1 - uncertainty_score) * 100),
+            confidence_score=conf_score_calc,
             confidence_reasons=confidence_reasons,
             messages=[
                 MessageChunk(
-                    text="Para darte la mejor respuesta posible, necesito revisar tu caso con más detalle. "
-                         "Un agente especializado te contactará en breve. 🙏",
+                    text=texto_handoff,
                     type="explanation"
                 )
             ],
@@ -772,9 +805,12 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             ),
             handoff_context=_build_handoff_context(
                 request, historial, historial_conversacion,
-                motivo="INCERTIDUMBRE_ALTA", fact_payload=fact_payload
+                motivo="INCERTIDUMBRE_ALTA", fact_payload=fact_payload,
+                confidence_reasons=confidence_reasons, confidence_score=conf_score_calc,
+                components_invoked=components_invoked,
             ),
         )
+        _adjuntar_desgloses(response, fact_payload)
         # Sin este registro, cualquier caso que derivara por incertidumbre alta
         # (justo los casos genuinamente difíciles) desaparecía sin dejar rastro
         # en el panel de cuarentena. No hay banco de soluciones si el caso más

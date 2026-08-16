@@ -170,6 +170,21 @@ def marcar_handoff_atendido(audit_log_id: int, db: Session = Depends(get_db)):
     return {"status": "ok", "id": entrada.id, "atendido": entrada.atendido}
 
 
+class HandoffChannelRequest(BaseModel):
+    session_id: str
+    canal_preferido: str
+
+
+@router.post("/handoff-channel")
+def update_handoff_channel(request: HandoffChannelRequest, db: Session = Depends(get_db)):
+    """
+    Actualiza el canal de atención preferido por el cliente (CHAT, LLAMADA, WHATSAPP)
+    en el expediente de derivación de la cola de soporte del panel de administración.
+    """
+    entrada = crud.update_ultimo_handoff_channel(db, request.session_id, request.canal_preferido)
+    return {"status": "ok", "canal_preferido": request.canal_preferido, "actualizado": entrada is not None}
+
+
 @router.post("/admin/proactive-check")
 def trigger_proactive_check(db: Session = Depends(get_db)):
     """

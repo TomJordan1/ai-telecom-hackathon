@@ -130,10 +130,10 @@ class PersonalityMetadata(BaseModel):
 
 class ChatResponse(BaseModel):
     session_id: str
-    intent_category: str
+    intent_category: str = "CONSULTA_GENERAL"
     requires_human_intervention: bool = False
-    sentiment_score: int = Field(..., ge=1, le=5)
-    messages: List[MessageChunk]
+    sentiment_score: int = Field(3, ge=1, le=5)
+    messages: List[MessageChunk] = []
     historical_bills_summary: List[BillSummary] = []
     # Desgloses deterministas: los rellena el orquestador a partir del payload
     # verificado, nunca el LLM. Permiten a la App mostrar el detalle del recibo
