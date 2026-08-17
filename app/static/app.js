@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Lucía - Copiloto de Facturación Movistar (Frontend App)
+// Alonza - Copiloto de Facturación Movistar (Frontend App)
 // ---------------------------------------------------------------------------
 
 const messagesContainer = document.getElementById('chat-messages');
@@ -42,9 +42,9 @@ function renderWelcomeFlow() {
     messagesContainer.innerHTML = '';
     updateBadge();
 
-    // 1. Mensaje de presentación de Lucía (sin emojis dependientes del SO)
+    // 1. Mensaje de presentación de Alonza (sin emojis dependientes del SO)
     addBotMessage(
-        "Hola. Soy **Lucía**, tu asistente de facturación y servicios de Movistar.\n\n" +
+        "Hola. Soy **Alonza**, tu asistente de facturación y servicios de Movistar.\n\n" +
         "Puedo explicarte los cobros de tu recibo, revisar el motivo de variación de tus importes o informarte sobre planes disponibles.\n\n" +
         "Para comenzar: **¿cuentas con un número de cuenta de Movistar o deseas hacer una consulta general como visitante?**"
     );
@@ -238,7 +238,7 @@ function addBotMessage(text, type = 'normal') {
     const row = document.createElement('div');
     row.className = 'message-row bot';
 
-    // Avatar mini de Lucía a la izquierda
+    // Avatar mini de Alonza a la izquierda
     const avatar = document.createElement('div');
     avatar.className = 'bot-avatar-mini';
     avatar.textContent = 'L';
@@ -777,6 +777,11 @@ async function sendMessage() {
         }
 
         if (data.en_atencion_humana) {
+            // Si no llegaron mensajes del bot (intercept de handoff activo),
+            // mostrar un indicador sutil para que el usuario sepa que el asesor verá su mensaje.
+            if (!ultimoWrap) {
+                addBotMessage("_Tu mensaje fue recibido. El asesor responderá en breve..._", 'normal');
+            }
             startPollingChat();
         }
 
@@ -796,6 +801,37 @@ async function sendMessage() {
 // ---------------------------------------------------------------------------
 // Polling para Chat en Tiempo Real con Agente (Handoff)
 // ---------------------------------------------------------------------------
+
+function addAgentMessage(text) {
+    const row = document.createElement('div');
+    row.className = 'message-row bot';
+
+    const avatar = document.createElement('div');
+    avatar.className = 'bot-avatar-mini';
+    avatar.textContent = '👤';
+    avatar.style.background = '#0284c7';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'bubble-wrap bot';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.style.background = '#e0f2fe';
+    bubble.style.color = '#0369a1';
+    bubble.style.border = '1px solid #bae6fd';
+
+    let formatted = text
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/`([^`]+)`/g, '<code style="background:#e2e8f0;padding:2px 6px;border-radius:4px;font-family:inherit;font-weight:600;font-size:0.9em;">$1</code>')
+        .replace(/\n/g, '<br>');
+    bubble.innerHTML = formatted;
+
+    wrap.appendChild(bubble);
+    row.appendChild(avatar);
+    row.appendChild(wrap);
+    messagesContainer.appendChild(row);
+    scrollToBottom();
+}
 
 let chatPollInterval = null;
 let lastHistoryLength = -1; // -1 = no inicializado; primer poll renderiza mensajes de agente ya existentes
@@ -825,42 +861,25 @@ async function pollChatForAgent() {
             // Primera llamada: renderizar mensajes de agente que ya estaban en el
             // historial ANTES de que el polling arrancara (evita que se pierdan
             // mensajes enviados justo después del handoff o antes de la recarga).
-            const agentMsgs = conv.filter(m => m.role === 'lucia' && m.intent === 'AGENTE_HUMANO');
-            agentMsgs.forEach(m => {
-                const wrap = addBotMessage(m.text, 'normal');
-                wrap.querySelector('.bubble').style.background = '#e0f2fe';
-                wrap.querySelector('.bubble').style.color = '#0369a1';
-                wrap.querySelector('.bubble').style.border = '1px solid #bae6fd';
-                const avatar = wrap.parentNode.querySelector('.bot-avatar-mini');
-                if (avatar) { avatar.textContent = '👤'; avatar.style.background = '#0284c7'; }
-            });
+            conv.filter(m => m.role === 'lucia' && m.intent === 'AGENTE_HUMANO')
+                .forEach(m => addAgentMessage(m.text));
             lastHistoryLength = conv.length;
         } else if (conv.length > lastHistoryLength) {
-            const newMsgs = conv.slice(lastHistoryLength);
-            newMsgs.forEach(m => {
+            conv.slice(lastHistoryLength).forEach(m => {
                 if (m.role === 'lucia' && m.intent === 'AGENTE_HUMANO') {
-                    // Mensaje del agente humano
-                    const wrap = addBotMessage(m.text, 'normal');
-                    wrap.querySelector('.bubble').style.background = '#e0f2fe';
-                    wrap.querySelector('.bubble').style.color = '#0369a1';
-                    wrap.querySelector('.bubble').style.border = '1px solid #bae6fd';
-                    const avatar = wrap.parentNode.querySelector('.bot-avatar-mini');
-                    if(avatar) {
-                        avatar.textContent = '👤';
-                        avatar.style.background = '#0284c7';
-                    }
+                    addAgentMessage(m.text);
                 } else if (m.role === 'lucia') {
-                    // Mensaje de Lucía (por si acaso envía algo)
+                    // Respuesta del bot (Alonza retomó la conversación)
                     addBotMessage(m.text, 'normal');
                 }
-                // Si role == 'user', fue el mensaje que el usuario acaba de enviar, no lo duplicamos.
+                // role === 'user': ya fue renderizado por addUserMessage() al enviar
             });
             lastHistoryLength = conv.length;
         }
 
         if (!data.en_atencion_humana) {
             stopPollingChat();
-            addBotMessage("🤖 **Lucía ha retomado la conversación.** ¿En qué más te puedo ayudar?", 'normal');
+            addBotMessage("🤖 **Alonza ha retomado la conversación.** ¿En qué más te puedo ayudar?", 'normal');
         }
     } catch(e) {
         // Silencioso

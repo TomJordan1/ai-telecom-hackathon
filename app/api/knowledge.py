@@ -142,7 +142,7 @@ def validate_case(caso_id: str, request: ValidarCasoRequest, db: Session = Depen
 @router.post("/admin/handoff/return/{session_id}")
 def return_handoff_to_bot(session_id: str, db: Session = Depends(get_db)):
     """
-    Devuelve explícitamente el control de la sesión a Lucía, 
+    Devuelve explícitamente el control de la sesión a Alonza, 
     revocando la bandera de handoff humano antes del timeout automático.
     """
     historial = crud.revocar_handoff(db, session_id)
@@ -150,7 +150,7 @@ def return_handoff_to_bot(session_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
     return {
         "status": "ok",
-        "mensaje": "Control devuelto a Lucía exitosamente."
+        "mensaje": "Control devuelto a Alonza exitosamente."
     }
 
 @router.get("/admin/handoff-queue")
@@ -399,7 +399,7 @@ def enviar_alerta_manual(request: EnviarAlertaManualRequest, db: Session = Depen
                 )
             else:
                 mensaje_a_enviar = (
-                    f"¡Hola! Soy Lucía de Movistar. Te confirmo que tu cuenta {request.user_id} ({plan}) "
+                    f"¡Hola! Soy Alonza de Movistar. Te confirmo que tu cuenta {request.user_id} ({plan}) "
                     f"está al día con un último recibo de S/ {monto:.2f}. "
                     "¿Tienes alguna duda sobre tu facturación?"
                 )
@@ -407,7 +407,7 @@ def enviar_alerta_manual(request: EnviarAlertaManualRequest, db: Session = Depen
 
     if not mensaje_a_enviar:
         mensaje_a_enviar = (
-            "🔔 ¡Hola! Este es un mensaje de prueba de Lucía (Copiloto de Facturación Movistar). "
+            "🔔 ¡Hola! Este es un mensaje de prueba de Alonza (Copiloto de Facturación Movistar). "
             "Tu canal de WhatsApp está correctamente conectado y listo para recibir alertas proactivas."
         )
 
@@ -469,7 +469,8 @@ def resolve_handoff(session_id: str, db: Session = Depends(get_db)):
 
     if session_id.startswith("wa_"):
         phone_number = session_id[3:]
-        send_whatsapp_text(phone_number, "🤖 Lucía ha retomado la conversación. ¿En qué más te puedo ayudar?")
+        send_whatsapp_text(phone_number, "🤖 Alonza ha retomado la conversación. ¿En qué más te puedo ayudar?")
         
     return {"status": "resolved"}
+
 

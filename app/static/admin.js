@@ -89,7 +89,7 @@ function renderHandoffCard(caso) {
         : "Sin evidencia de facturación asociada.";
 
     const historial = (ctx.historial_reciente || [])
-        .map((t) => `${t.role === "user" ? "Usuario" : "Lucía"}: ${t.text}`)
+        .map((t) => `${t.role === "user" ? "Usuario" : "Alonza"}: ${t.text}`)
         .join("\n") || "Sin turnos previos registrados.";
 
     return `
@@ -195,7 +195,7 @@ document.getElementById("btn-resolve-chat").addEventListener("click", async () =
     if (!confirm("¿Seguro que el caso está resuelto? El bot volverá a responder a partir del próximo mensaje.")) return;
     try {
         await apiPost(`/admin/handoff/${currentChatSessionId}/resolve`);
-        showToast("Caso cerrado y control devuelto a Lucía.");
+        showToast("Caso cerrado y control devuelto a Alonza.");
         document.getElementById("chat-modal").style.display = "none";
         currentChatSessionId = null;
         if(chatRefreshInterval) clearInterval(chatRefreshInterval);

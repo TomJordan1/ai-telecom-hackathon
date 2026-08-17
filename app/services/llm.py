@@ -52,7 +52,7 @@ def _formatear_historial(turnos: Optional[List[Dict[str, Any]]], max_turnos: int
     recientes = turnos[-max_turnos:]
     lineas = []
     for t in recientes:
-        rol = "Usuario" if t.get("role") == "user" else "Lucía"
+        rol = "Usuario" if t.get("role") == "user" else "Alonza"
         texto = (t.get("text") or "").strip()
         if not texto:
             continue
@@ -138,7 +138,7 @@ def _generate_mock_response(
         if tiene_historial:
             messages.append(MessageChunk(text="Bien, déjame revisar tu estado de cuenta al detalle...", type="hook", delay_ms=0))
         else:
-            messages.append(MessageChunk(text="Hola. Soy Lucía. He analizado tus recibos al detalle para explicarte qué pasó.", type="hook", delay_ms=0))
+            messages.append(MessageChunk(text="Hola. Soy Alonza. He analizado tus recibos al detalle para explicarte qué pasó.", type="hook", delay_ms=0))
 
             
     delta = deterministic_payload.get('variation_amount', 0)
@@ -161,7 +161,7 @@ def _generate_mock_response(
     if cross_sell_eligible and recommended_plan:
         suggestion = PlanOptimizerSuggestion(
             available=True,
-            mensaje_comercial=f"Dato curioso: Lucía encontró el plan {recommended_plan['nombre']} que podría convenirte más. ¿Te ayudo a activarlo?",
+            mensaje_comercial=f"Dato curioso: Alonza encontró el plan {recommended_plan['nombre']} que podría convenirte más. ¿Te ayudo a activarlo?",
             plan_recomendado=RecommendedPlan(**recommended_plan)
         )
     elif not cross_sell_eligible and intent_category != "BLOQUEO_COMPLIANCE":
@@ -221,7 +221,7 @@ def generate_response(
         
         # 3. Diseñar el Prompt
         system_template = """
-        Eres Lucía, la asistente de facturación B2C de una empresa de telecomunicaciones en Perú.
+        Eres Alonza, la asistente de facturación B2C de una empresa de telecomunicaciones en Perú.
         Tu objetivo es explicar variaciones de recibos de manera empática y clara.
         REGLA DE ORO: NO PUEDES hacer cálculos matemáticos. Toda la información de montos, 
         fechas y variaciones DEBE salir estrictamente del 'Deterministic Payload'. No inventes números.
@@ -232,7 +232,7 @@ def generate_response(
 
         REGLA DE CONTINUIDAD Y SALUDOS (CRÍTICA):
         - Si en 'HISTORIAL RECIENTE DE LA CONVERSACIÓN' ya hay mensajes previos (la conversación está en curso):
-          * NUNCA saludes con "¡Hola!", "Hola", "¡Hola de nuevo!" ni te vuelvas a presentar ("Soy Lucía...").
+          * NUNCA saludes con "¡Hola!", "Hola", "¡Hola de nuevo!" ni te vuelvas a presentar ("Soy Alonza...").
           * Tu primer mensaje ("hook") debe ser una transición fluida y natural, por ejemplo:
             "Bien, déjame revisar tu estado de cuenta...", "Revisando el detalle de tus recibos...", "Claro, aquí tengo la información:", o ir directamente a la respuesta.
           * Repetir "¡Hola!" a mitad de una conversación suena robótico e interrumpido.
@@ -442,7 +442,7 @@ CAMPO "intent" — elige exactamente uno:
 - "SOLICITUD_AGENTE": el MENSAJE ACTUAL pide explícitamente hablar con una
   persona, un asesor o un agente humano, o rechaza seguir hablando con un bot/IA.
   Esta intención tiene prioridad sobre FACTURACION si ambas aparecen juntas.
-  IMPORTANTE: clasifica solo según el mensaje actual. Si en el historial Lucía
+  IMPORTANTE: clasifica solo según el mensaje actual. Si en el historial Alonza
   ya derivó a un agente en un turno anterior pero el usuario sigue escribiendo
   con normalidad (porque en esta conversación aún no llegó ningún agente),
   NO vuelvas a clasificar como SOLICITUD_AGENTE salvo que el usuario lo esté
@@ -467,7 +467,7 @@ CAMPO "perfil_lexico" — cómo escribe el usuario. Elige exactamente uno:
 CAMPO "respuesta"
 - Si "intent" es "FACTURACION" o "SOLICITUD_AGENTE": devuelve exactamente "".
   (Estos dos casos los responde otro componente del sistema, no tú en este paso).
-- En cualquier otro caso: escribe la respuesta de Lucía, en primera persona,
+- En cualquier otro caso: escribe la respuesta de Alonza, en primera persona,
   adaptada al perfil_lexico detectado.
 
 REGLAS DE LA RESPUESTA CONVERSACIONAL
@@ -495,7 +495,7 @@ def classify_and_reply(
 ) -> Optional[Dict[str, Any]]:
     """
     Una sola llamada al LLM que clasifica la intención, detecta el registro
-    lingüístico y, si el turno no es de facturación, redacta la respuesta de Lucía.
+    lingüístico y, si el turno no es de facturación, redacta la respuesta de Alonza.
 
     Retorna un dict {intent, perfil_lexico, respuesta} o None si el LLM no está
     disponible o falla (el llamador decide el fallback).
@@ -520,7 +520,7 @@ def classify_and_reply(
         contexto_extra += (
             "\nHISTORIAL RECIENTE DE LA CONVERSACIÓN (úsalo para entender el contexto; "
             "un mensaje corto como 'sí', 'ok' o 'por favor' normalmente responde al último "
-            "turno de Lucía, no es un tema nuevo):\n"
+            "turno de Alonza, no es un tema nuevo):\n"
             f"{_formatear_historial(historial_conversacion)}\n"
         )
 
@@ -559,7 +559,7 @@ def classify_and_reply(
 # ---------------------------------------------------------------------------
 #
 # A diferencia de generate_response (que reacciona a un mensaje del usuario),
-# aquí Lucía escribe primero. El dato de la alerta (upcoming_alerts) ya viene
+# aquí Alonza escribe primero. El dato de la alerta (upcoming_alerts) ya viene
 # calculado de forma determinista; el LLM solo lo traduce a un mensaje cálido
 # y proactivo. Nunca inventa la fecha, el monto ni el concepto.
 
@@ -652,4 +652,5 @@ def generate_proactive_alert_message(
     except Exception as e:
         print(f"Error generando alerta proactiva con LLM: {e}. Se usará fallback.")
         return fallback
+
 

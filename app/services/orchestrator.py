@@ -213,7 +213,7 @@ def _finalizar(
     fact_payload: Optional[Dict[str, Any]] = None,
 ) -> ChatResponse:
     """
-    Punto único de salida: registra el turno (usuario + Lucía) en la bitácora
+    Punto único de salida: registra el turno (usuario + Alonza) en la bitácora
     acotada de la sesión y garantiza la inclusión de Siguientes Acciones Recomendadas (Next Best Actions).
     """
     from app.services.text_utils import split_long_messages
@@ -370,7 +370,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
             crud.revocar_handoff(db, request.session_id)
             # Refrescamos el estado
             historial = crud.get_or_create_historial(db, request.session_id, request.user_id)
-            # Agregamos una nota silenciosa para que Lucía sepa qué pasó
+            # Agregamos una nota silenciosa para que Alonza sepa qué pasó
             crud.append_turno_conversacion(
                 db, request.session_id, "lucia", 
                 "El sistema retomó el control de la conversación porque el asesor humano estuvo inactivo mucho tiempo. Disculpa la demora."
@@ -422,7 +422,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         )
         return _finalizar(db, request, response)
 
-    # Continuidad de derivación sensible: si el último turno de Lucía ya derivó
+    # Continuidad de derivación sensible: si el último turno de Alonza ya derivó
     # por cancelación/portabilidad/nueva línea, un mensaje corto de seguimiento
     # ("para mí", "sí", "ok") no debe reclasificarse desde cero. Sin este check,
     # ese turno caía al pipeline de facturación (porque no repite las palabras
@@ -439,11 +439,11 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
         ultima_actividad_previa
         and (datetime.utcnow() - ultima_actividad_previa).total_seconds() / 60 < UMBRAL_SESION_RETOMADA_MINUTOS
     )
-    ultimo_turno_lucia = next(
+    ultimo_turno_alonza = next(
         (t for t in reversed(historial_conversacion) if t.get("role") == "lucia"), None
     )
     patron_en_gestion = (
-        ultimo_turno_lucia.get("intent") if ultimo_turno_lucia else None
+        ultimo_turno_alonza.get("intent") if ultimo_turno_alonza else None
     )
     if (
         sesion_activa
@@ -569,7 +569,7 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     # Paso 0.6: Solicitudes estructurales sensibles
     # Regla de negocio inquebrantable: cancelaciones, bajas, portabilidad y nuevas
     # líneas requieren verificación de identidad y proceso regulatorio formal.
-    # Lucía NUNCA intenta retener al cliente, renegociar el plan ni resolver estas
+    # Alonza NUNCA intenta retener al cliente, renegociar el plan ni resolver estas
     # solicitudes por su cuenta.
     #
     # Dos caminos según el banco de conocimiento:
@@ -1151,3 +1151,4 @@ def process_message(request: ChatRequest, db: Session) -> ChatResponse:
     )
 
     return _finalizar(db, request, response, fact_payload)
+

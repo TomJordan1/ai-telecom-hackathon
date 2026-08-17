@@ -116,7 +116,7 @@ def _procesar_y_responder(phone_number: str, user_text: str, message_id: str):
             # Si es saludo inicial de un usuario no vinculado, pedir número de cuenta o consulta
             if es_saludo:
                 msg_bienvenida = (
-                    "¡Hola! 👋 Soy *Lucía*, tu copiloto de facturación y servicios de Movistar.\n\n"
+                    "¡Hola! 👋 Soy *Alonza*, tu copiloto de facturación y servicios de Movistar.\n\n"
                     "Para consultar tus recibos, revisar cobros y recibir alertas sobre tu línea, "
                     "por favor envíame tu *número de cuenta financiera* (ejemplo: *cuenta 102968745* o solo los dígitos *102968745*).\n\n"
                     "Si aún no eres cliente y deseas conocer nuestros planes de internet fibra o telefonía móvil, "
@@ -173,7 +173,7 @@ def _firma_valida(cuerpo: bytes, firma_header: str | None) -> bool:
     """
     Verifica el header X-Hub-Signature-256 que Meta firma con el App Secret.
     Sin esta validación, cualquiera que conozca la URL pública del webhook puede
-    inyectar eventos falsos y hacer que Lucía escriba a los destinatarios.
+    inyectar eventos falsos y hacer que Alonza escriba a los destinatarios.
 
     Si WHATSAPP_APP_SECRET no está configurado, no se bloquea (para no romper un
     entorno de demo ya funcionando), pero se avisa en el log.
@@ -277,3 +277,4 @@ async def receive_whatsapp_message(request: Request, background_tasks: Backgroun
         print(f"[WA WEBHOOK ERROR] {e}")
         traceback.print_exc()
         return Response(content="ERROR", status_code=500)
+
