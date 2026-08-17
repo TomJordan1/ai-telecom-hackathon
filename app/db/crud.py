@@ -488,6 +488,7 @@ def marcar_handoff(db: Session, session_id: str):
     historial = db.query(models.HistorialInteracciones).filter(models.HistorialInteracciones.session_id == session_id).first()
     if historial:
         historial.handed_off_to_human = True
+        historial.en_atencion_humana = True   # activa el intercept en /chat
         historial.handed_off_at = datetime.utcnow()
         db.commit()
         db.refresh(historial)
@@ -497,6 +498,7 @@ def revocar_handoff(db: Session, session_id: str):
     historial = db.query(models.HistorialInteracciones).filter(models.HistorialInteracciones.session_id == session_id).first()
     if historial:
         historial.handed_off_to_human = False
+        historial.en_atencion_humana = False  # desactiva el intercept en /chat
         historial.handed_off_at = None
         db.commit()
         db.refresh(historial)

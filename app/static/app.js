@@ -798,11 +798,11 @@ async function sendMessage() {
 // ---------------------------------------------------------------------------
 
 let chatPollInterval = null;
-let lastHistoryLength = 0;
+let lastHistoryLength = -1; // -1 = no inicializado; primer poll renderiza mensajes de agente ya existentes
 
 function startPollingChat() {
     if (chatPollInterval) return;
-    lastHistoryLength = 0; // Sincroniza en la primera llamada
+    lastHistoryLength = -1; // Forzar render de mensajes de agente ya almacenados en el primer poll
     chatPollInterval = setInterval(pollChatForAgent, 3000);
 }
 
@@ -821,8 +821,19 @@ async function pollChatForAgent() {
         const data = await res.json();
         const conv = data.historial_conversacion || [];
         
-        if (lastHistoryLength === 0 || lastHistoryLength < conv.length - 50) {
-            // Inicialización segura si es la primera vez (evita spam de mensajes viejos)
+        if (lastHistoryLength === -1) {
+            // Primera llamada: renderizar mensajes de agente que ya estaban en el
+            // historial ANTES de que el polling arrancara (evita que se pierdan
+            // mensajes enviados justo después del handoff o antes de la recarga).
+            const agentMsgs = conv.filter(m => m.role === 'lucia' && m.intent === 'AGENTE_HUMANO');
+            agentMsgs.forEach(m => {
+                const wrap = addBotMessage(m.text, 'normal');
+                wrap.querySelector('.bubble').style.background = '#e0f2fe';
+                wrap.querySelector('.bubble').style.color = '#0369a1';
+                wrap.querySelector('.bubble').style.border = '1px solid #bae6fd';
+                const avatar = wrap.parentNode.querySelector('.bot-avatar-mini');
+                if (avatar) { avatar.textContent = '👤'; avatar.style.background = '#0284c7'; }
+            });
             lastHistoryLength = conv.length;
         } else if (conv.length > lastHistoryLength) {
             const newMsgs = conv.slice(lastHistoryLength);
@@ -875,4 +886,15 @@ messageInput.addEventListener('keypress', (e) => {
 // Arrancar al cargar
 document.addEventListener('DOMContentLoaded', () => {
     renderWelcomeFlow();
+
+    // Si la sesión ya estaba en atención humana al cargar la página (p.ej. tras
+    // un reload), arrancar el polling sin esperar a que el usuario envíe un mensaje.
+    fetch(`/api/v1/admin/handoff/${sessionId}/historial`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+            if (data && data.en_atencion_humana) {
+                startPollingChat();
+            }
+        })
+        .catch(() => {});
 });
