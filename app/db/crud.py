@@ -883,3 +883,70 @@ def get_planes_ofertables(db: Session, limit: int = 400):
         })
     return planes
 
+
+# ---------------------------------------------------------------------------
+# Purga de sesiones de visitantes caducadas
+# ---------------------------------------------------------------------------
+
+TTL_SESIONES_VISITANTES_DIAS = 7
+
+
+def purgar_sesiones_visitantes_caducadas(db: Session) -> int:
+    """
+    Elimina sesiones de visitantes (user_id IS NULL) cuya última actividad
+    supere TTL_SESIONES_VISITANTES_DIAS días.
+
+    Borra en este orden para respetar integridad referencial:
+      1. audit_log  — referencia session_id de historial_interacciones
+      2. historial_interacciones — la fila raíz del visitante
+
+    Devuelve el número de sesiones eliminadas.
+
+    Seguridad ante el riesgo de "sesión huérfana":
+    - El session_id vive en localStorage del navegador. Si el visitante
+      vuelve antes de los 7 días, la fila sigue en DB y se reutiliza
+      normalmente (get_or_create_historial la encuentra por session_id).
+    - Si vuelve después de la purga, get_or_create_historial no encuentra
+      la fila y crea una nueva con el MISMO session_id que sigue en
+      localStorage → no se genera una nueva sesión duplicada.
+    - Solo se pierden los mensajes, que es el comportamiento deseado.
+    """
+    from datetime import timedelta
+
+    limite = datetime.utcnow() - timedelta(days=TTL_SESIONES_VISITANTES_DIAS)
+
+    # Obtener los session_ids a purgar antes de borrar
+    sesiones_a_purgar = (
+        db.query(models.HistorialInteracciones.session_id)
+        .filter(
+            models.HistorialInteracciones.user_id.is_(None),
+            models.HistorialInteracciones.updated_at < limite,
+        )
+        .all()
+    )
+    if not sesiones_a_purgar:
+        return 0
+
+    ids = [row.session_id for row in sesiones_a_purgar]
+
+    try:
+        # 1. Borrar audit_log asociado (si la tabla existe; no falla si no hay filas)
+        db.query(models.AuditLog).filter(
+            models.AuditLog.session_id.in_(ids)
+        ).delete(synchronize_session=False)
+
+        # 2. Borrar las sesiones de visitantes
+        borradas = (
+            db.query(models.HistorialInteracciones)
+            .filter(models.HistorialInteracciones.session_id.in_(ids))
+            .delete(synchronize_session=False)
+        )
+
+        db.commit()
+        print(f"[PURGA VISITANTES] {borradas} sesión(es) de visitante eliminada(s) (TTL={TTL_SESIONES_VISITANTES_DIAS}d).")
+        return borradas
+
+    except Exception as e:
+        db.rollback()
+        print(f"[PURGA VISITANTES] Error durante la purga: {e}")
+        return 0

@@ -4,12 +4,30 @@ from app.core.schemas import ChatRequest, ChatResponse
 from app.db.database import get_db
 from app.services.orchestrator import process_message
 import traceback
+import random
 
 router = APIRouter()
+
+# Probabilidad de ejecutar la purga lazy en cada request (1/50 = 2%).
+# Cubre los días en que el servidor no se reinicia sin añadir latencia
+# perceptible: la purga es una sola query DELETE y se ejecuta de forma
+# síncrona pero no bloquea porque tarda < 5 ms en condiciones normales.
+_PURGA_LAZY_PROBABILIDAD = 1 / 50
+
 
 @router.post("/chat", response_model=ChatResponse)
 async def process_chat(request: ChatRequest, db: Session = Depends(get_db)):
     from app.db import crud
+
+    # Purga lazy: ~2% de los requests eliminan sesiones de visitantes caducadas.
+    # Se ejecuta ANTES del try principal para no enmascarar errores de negocio,
+    # y su propio try/except garantiza que un fallo aquí nunca rompa el chat.
+    if random.random() < _PURGA_LAZY_PROBABILIDAD:
+        try:
+            crud.purgar_sesiones_visitantes_caducadas(db)
+        except Exception as purga_err:
+            print(f"[PURGA LAZY] Error no crítico, se omite: {purga_err}")
+
     try:
         # Intercepción si está en atención humana
         if crud.is_en_atencion_humana(db, request.session_id):
